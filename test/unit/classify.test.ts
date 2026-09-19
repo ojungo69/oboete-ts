@@ -8,11 +8,13 @@ import { isBusyError, openDatabase } from '../../src/db/open.js';
 import {
   DEGRADED_PRECEDENCE,
   checkLanguage,
+  dominantScript,
   rejectsDirectives,
   sessionSummary,
 } from '../../src/observer/classify.js';
 import {
   eventParts,
+  eventText,
   observerInputSchema,
   type ObserverInput,
 } from '../../src/observer/contract.js';
@@ -182,13 +184,18 @@ test('a value that literally contains a backslash-n is not decoded into the corp
  * A fragment as `request.ts` builds one: `fitFragment` slices `canonicalJson(event)`, so a page
  * carries the object's own structure and not just the contents of one value. `slice` picks the page.
  */
-function pagedEvent(event: object, slice: (canonical: string) => string): ObserverInput['events'][number] {
+function pagedEvent(
+  event: { id: string; kind: string; captured_at?: number; [field: string]: unknown },
+  slice: (canonical: string) => string,
+): ObserverInput['events'][number] {
   const canonical = JSON.stringify(event);
   const text = slice(canonical);
   const start = canonical.indexOf(text);
   assert.notEqual(start, -1, 'the slice has to come from the canonical JSON');
+  // `fitFragment` copies the source event's own `id`, `kind` and `captured_at` onto the page, so a
+  // helper that named its own would stop modelling a request the moment anything branched on them.
   return observerInputSchema.shape.events.element.parse({
-    id: 'e1', kind: 'prompt',
+    id: event.id, kind: event.kind, captured_at: event.captured_at,
     fragment: { format: 'event-json-v1', source_hash: 'h1',
       start, end: start + text.length, total: canonical.length, text },
   });
@@ -269,9 +276,33 @@ test("a tool call's own name is not a quote, so it cannot exempt an English titl
   assert.equal(checkLanguage(inputWithHint('ja', [events[0], mcp]), titled), 'mismatch');
 
   // `other` is what `eventFor` writes for an event that named no tool, and it is nobody's quote
-  // either; the assertion above covers every shape because no `tool_name` reaches the corpus.
+  // either. This covers the shapes `eventParts` builds field by field; the paged shape is not one
+  // of them, and the test below says what it does instead.
   const untooled = { id: 'e4', kind: 'tool_call', tool_name: 'other', input: { paths: [] } };
   assert.equal(eventParts(observerInputSchema.shape.events.element.parse(untooled)).length, 0);
+});
+
+test('the last page of a tool call carries its name, and the name exempts a title (#291)', () => {
+  // `fitFragment` slices `canonicalJson(event)`, which serializes the whole event with its keys
+  // sorted, and `tool_name` sorts last: the final page of an oversized tool call carries it, and
+  // `decodeFragment` returns its value as a run of its own. The filter above never sees it.
+  // A fragment is the only event of its request (`request.ts` closes the page after one), and the
+  // hint is derived from what is sent rather than given, so both are that way here.
+  const page = pagedEvent(
+    { id: 'e1', kind: 'tool_call', captured_at: NOW,
+      input: { text: '配布の設定を確認しました。'.repeat(4) },
+      tool_name: 'mcp:serena/read_file' },
+    (canonical) => canonical.slice(canonical.indexOf('"input"')));
+  assert.ok(eventParts(page).includes('mcp:serena/read_file'));
+  const hint = dominantScript(eventText(page));
+  assert.equal(hint, 'ja', 'the page is Japanese apart from the name it carries');
+  // Keeping the name out of `eventParts` is not what closes this: the exemption is a substring
+  // test, so any four-character Latin run the request carries — `read` inside a path, a command or
+  // an English sentence — exempts a title of `Read` just the same (#291, measured). The first
+  // assertion is a permanent fact about the last page; this one is the gap, and it is the one that
+  // flips when #291 lands.
+  const titled = output(observation({ title: 'Read', body: 'Read' }));
+  assert.equal(checkLanguage(inputWithHint(hint, [page]), titled), 'ok');
 });
 
 test('a short coincidence does not exempt a field', () => {

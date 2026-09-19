@@ -239,13 +239,17 @@ export function eventParts(event: ObserverInput['events'][number]): string[] {
   // joins exactly command, text and paths), and a file name is often the only foreign-script string
   // an otherwise English event holds.
   const paths = Array.isArray(input?.paths) ? input.paths : [];
-  // `tool_name` is deliberately absent, in both halves of the vocabulary. `TOOL_NAMES` is oboete's
-  // own normalized set — `read`, `write`, `edit`, `bash` — so quoting it exempts those English words
-  // from the language gate, and an `mcp:<server>/<tool>` name does the same through `unquoted`'s
-  // whole-containment rule: measured on #278, `mcp:serena/read_file` in the corpus let a title of
-  // `Read` pass a `ja` check, and `MCP_TOOL_NAME_PATTERN` puts no bound on the tool half, which the
-  // server supplies as free text. Admitting a name safely needs a token boundary in `unquoted`
-  // rather than a narrower filter here (#291).
+  // `tool_name` is deliberately absent from this list, in both halves of the vocabulary. `TOOL_NAMES`
+  // is oboete's own normalized set — `read`, `write`, `edit`, `bash` — so quoting it exempts those
+  // English words from the language gate, and an `mcp:<server>/<tool>` name does the same through
+  // `unquoted`'s whole-containment rule: measured on #278, `mcp:serena/read_file` in the corpus let a
+  // title of `Read` pass a `ja` check, and `MCP_TOOL_NAME_PATTERN` puts no bound on the tool half,
+  // which the server supplies as free text. Leaving it out of this list is not the whole guard: a
+  // `fragment` is a slice of the event's canonical JSON, whose keys are sorted, and `tool_name`
+  // sorts last, so the final page of an oversized event carries it whatever this list says. Nor
+  // would keeping it out suffice — the exemption is a substring test, so any four-character Latin
+  // run the request holds does the same job. Both are #291, whose fix is a token boundary in
+  // `unquoted` rather than a narrower filter here.
   const fragment = event.fragment?.text;
   return [event.text, event.output, event.error, input?.command, input?.text, ...paths]
     .filter((value): value is string => typeof value === 'string')
