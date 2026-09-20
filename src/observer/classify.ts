@@ -160,7 +160,8 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
  * honest quote in another script. The comparison is against every script the chain of adjacent runs
  * has already held, not only the run before, so an identifier quoted between two fragments of one
- * script does not buy them the framing exemption. A run of punctuation holds no script at all. Scoring that quote would fail the field the exemption exists for,
+ * script does not buy them the framing exemption. Nothing without a script breaks the chain, neither
+ * a quoted run of punctuation nor a separator the field inserted itself; words of its own do. Scoring that quote would fail the field the exemption exists for,
  * so that junction is left alone. A field that quotes twice with words of its own between them has
  * no junction either, and neither has a field that is one quote.
  */
@@ -178,7 +179,7 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   if (characterCount(subject) > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
   let residual = '';
   let index = 0;
-  let previousRunEnd = -1;
+  let sinceRun = '';
   const chain = new Set<'ja' | 'en'>();
   while (index < subject.length) {
     const length = quotedRun(subject, index, corpus);
@@ -188,20 +189,23 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       // also keeps every later run start on a boundary.
       const character = String.fromCodePoint(subject.codePointAt(index) ?? 0);
       residual += character;
+      sinceRun += character;
       index += character.length;
       continue;
     }
     const run = subject.slice(index, index + length);
     const script = dominantScript(run);
-    // Words of the field's own end the chain; a run of punctuation has no script of its own, so it
-    // neither ends one nor joins one.
-    if (index !== previousRunEnd) chain.clear();
+    // Words of the field's own end the chain. Characters with no script do not: a space or a comma
+    // the field puts between two fragments joins them as surely as nothing between them would. A
+    // run of punctuation is the same case from the other side — it has no script to end a chain
+    // with, and none to join one by.
+    if (scriptRatios(sinceRun).letters > 0) chain.clear();
     // The whole run, because one character of it is nothing to score when that character is
     // punctuation, which `scriptAgrees` reads as `other`.
     else if (script !== 'other' && chain.has(script)) residual += run;
     if (script !== 'other') chain.add(script);
+    sinceRun = '';
     index += length;
-    previousRunEnd = index;
   }
   return residual;
 }

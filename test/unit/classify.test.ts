@@ -470,6 +470,17 @@ test('a separator run after the field\u2019s own words starts a new chain', () =
   assert.equal(checkLanguage(inputWithHint('en', events), spaced), 'ok');
 });
 
+test('a separator the field inserts does not hide the sentence it joins', () => {
+  // The space between the two fragments is the field's own, but it carries no script, so it cannot
+  // stand for the words of its own that end a chain: both fragments are still the request's.
+  const events = [
+    { id: 'e1', kind: 'tool_call', text: '\u8a2d\u5b9a\u3092\u78ba\u8a8d\u3057\u307e\u3057\u305f\u3002', input: { paths: ['rotate deployment'] } },
+    { id: 'e2', kind: 'tool_call', text: '\u518d\u8a66\u884c\u306e\u8a18\u9332\u3092\u898b\u307e\u3059\u3002', input: { paths: ['every monday'] } },
+  ];
+  const joined = output(observation({ title: '\u8a18\u9332', body: 'rotate deployment every monday' }));
+  assert.equal(checkLanguage(inputWithHint('ja', events), joined), 'mismatch');
+});
+
 test('an identifier quoted between two fragments does not make the chain framing', () => {
   // Each junction on its own changes script, but the chain holds Japanese on both sides of the
   // identifier: the sentence is still assembled out of three fields the request never wrote joined.
