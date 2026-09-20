@@ -2736,19 +2736,23 @@ exercises 009 (#244 was schema 3).
 
 What a worker costs while a reader holds the database open and capture keeps arriving, measured by
 `scripts/measure-resources.mjs` against the product's own binaries in a temporary home, reading only
-what the product writes (`logs/observe.log`, `worker_lease.pid`, `/proc/<pid>/status`, the database
-and its WAL). The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is
-2026-09-17 against `main` `6b683213` on both supported Node versions.
+what the product writes or what the run itself started (`logs/observe.log` and the `run start pid=`
+it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, the database and its WAL).
+The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-20
+against `1a83a019` on both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
 the resident worker, then a 20-second hold of a read-only connection while 20 sessions of 9 prompts
-each keep capturing, sampling every ~200 ms and again after the drain and stop.
+each keep capturing, sampling every ~250 ms and again after the drain and stop.
 
 Four checks are gated and pass on Node 24.16.0 and 22.23.1: no missing, duplicate or
-failed-classification source; `pending = 0`, `liveBatches = 0`, `endReason = stopped`; the WAL
-recycling to 0 after the product's own stop path runs `wal_checkpoint(TRUNCATE)`; and peak `VmHWM`
-under 150 MiB (108.20 MiB and 100.89 MiB). Injection p99 (317.5 ms) and two session-start packs
-without `summary_pending` are reported rather than gated — they belong to the timing work.
+failed-classification source and each session's `session_start`, `session_end`,
+`last_assistant_message` and `turn_end` stored exactly once; `pending = 0`, `liveBatches = 0`,
+`endReason = stopped`; the WAL recycling to 0 after the product's own stop path runs
+`wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (108.43 MiB and 100.91 MiB). Injection
+p99 (276.1 ms), two session-start packs without `summary_pending`, and a handful of phase B hooks
+that took about 3 s on a machine shared with an interactive session (#210) are reported rather than
+gated — they belong to the timing work.
 
 What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a
 20-second hold shows nothing about long-run growth (#268), and `[observer] preset = "none"` means no

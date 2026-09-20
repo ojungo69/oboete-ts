@@ -415,15 +415,16 @@ writers require separate worktrees. No deployment follows merely from an increme
   #233 and #234 are recorded against the contract paragraphs that place them outside this task —
   a pre-existing pass-loop defect the resident inherits, two clock-and-retention findings from the
   delta reviews, and the post-release spawn hand-off the unconditional release leaves open.
-- T042 (open, 2026-09-18): the retained-history resource sweep is measured and recorded; the scale legs
+- T042 (open, 2026-09-20): the retained-history resource sweep is measured and recorded; the scale legs
   and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
-  temporary home and reads only what the product writes, in two phases: a replay of
+  temporary home and reads only what the product writes or what the run itself started, in two phases: a replay of
   `test/fixtures/events-1000.jsonl` through the real hooks and the resident worker, then a 20-second
   hold of a read-only connection while 20 sessions keep capturing. Four gated checks pass on Node
   24.16.0 and 22.23.1 — no missing, duplicate or failed-classification source; `pending=0`,
   `liveBatches=0`, `endReason=stopped`; the WAL recycling to 0 after `wal_checkpoint(TRUNCATE)`; and
-  peak `VmHWM` under 150 MiB. Injection p99 (317.5 ms) and the two session-start packs without
-  `summary_pending` are reported, not gated, and belong to the timing work rather than this sweep.
+  peak `VmHWM` under 150 MiB. Injection p99 (276.1 ms), the two session-start packs without
+  `summary_pending` and a few ~3 s phase B hooks on a machine shared with an interactive session
+  (#210) are reported, not gated, and belong to the timing work rather than this sweep.
   What the run cannot say is stated in the evidence file: a 20-second hold shows no long-run growth
   (#268), 1,051 events is not scale (#267), and `preset = "none"` exercises no provider at all.
 - T040 (open, 2026-09-17): the macOS leg now runs on a GitHub-hosted `macos-15` runner through
