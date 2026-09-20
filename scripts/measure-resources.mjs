@@ -224,7 +224,7 @@ function parseRss(text) {
   return m === null ? 0 : Number(m[1]);
 }
 function readRss(path) {
-  let text = '';
+  let text;
   try { text = readFileSync(path, 'utf8'); } catch { return 0; }
   try { rmSync(path, { force: true }); } catch { /* the home is removed anyway */ }
   return parseRss(text);
@@ -474,11 +474,11 @@ function groupAlive(pid) {
 // run created; it is the same world-readable line the start time comes from, never an environment.
 function groupMembers(pgid) {
   const members = [];
-  let names = [];
+  let names;
   try { names = readdirSync('/proc'); } catch { return members; }
   for (const name of names) {
     if (!/^\d+$/.test(name)) continue;
-    let text = '';
+    let text;
     try { text = readFileSync(`/proc/${name}/stat`, 'utf8'); } catch { continue; }
     if (Number(text.slice(text.lastIndexOf(')') + 1).trim().split(' ')[2]) === pgid) members.push(Number(name));
   }
@@ -808,11 +808,11 @@ async function phaseA(cli, paths, env) {
   if (!existsSync(paths.db)) throw new HarnessError('phase A left no memory.db');
   const json = parseJsonStdout(result.stdout);
   const repo = findReplayRepo(result.stderr);
-  paths.repo = found.repo;
+  paths.repo = repo;
   return { exit: result.status, ms: result.ms, json, dbBytes: fileBytes(paths.db), walBytes: fileBytes(`${paths.db}-wal`), repo, ...replayGates(json) };
 }
 async function phaseB(cli, paths, env, runId, samples) {
-  let stage = 'hold', reader, walWitness, holdFrom = 0, holdTo = 0;
+  let stage = 'hold', reader, walWitness, holdFrom, holdTo;
   const sampler = startSampler(paths, samples, () => stage);
   try {
     reader = holdReader(paths.db);
@@ -893,7 +893,7 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
-  let priorIds = [];
+  let priorIds;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
