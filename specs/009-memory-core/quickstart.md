@@ -2737,23 +2737,25 @@ exercises 009 (#244 was schema 3).
 What a worker costs while a reader holds the database open and capture keeps arriving, measured by
 `scripts/measure-resources.mjs` against the product's own binaries in a temporary home, reading only
 what the product writes or what the run itself started (`logs/observe.log` and the `run start pid=`
-it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, the database and its WAL).
-The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-21
-against `ccee8219` on both supported Node versions.
+it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, each child's peak resident
+size from `/usr/bin/time -f %M`, the database and its WAL). The receipts are
+`docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-21 against `fb805013` on
+both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
-38 one-shot worker runs, then, against the resident worker, a hold of a read-only connection of at least 20 seconds (24.0 s
-measured, the rest being the session-end hooks and the wait for a batch to overlap the hold) while
-20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and again after the drain and
-stop.
+38 one-shot worker runs, then, against the resident worker, a hold of a read-only connection of at
+least 20 seconds (24.0 s measured, the rest being the session-end hooks and the wait for a batch to
+overlap the hold) while 20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and
+again after the drain and stop.
 
 Four checks are gated and pass on Node 24.16.0 and 22.23.1: all 1,322 rows phase A leaves are still
 there afterwards, with no missing, duplicate or failed-classification source and each session's
 `session_start`, `session_end`, `last_assistant_message` and `turn_end` stored exactly once;
 `pending = 0`, `liveBatches = 0`, `endReason = stopped`; the WAL recycling to 0 after the product's
-own stop path runs `wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (107.87 MiB and
-100.15 MiB) across every process of the run, each of the 245 children watched while it ran.
-Injection p99 (290.3 ms) and two session-start packs without `summary_pending` are reported rather
+own stop path runs `wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (107.99 MiB and
+100.42 MiB) across every process of the run — the worker from the samples, and all 245 children
+from the kernel's figure at exit, which is what carries phase A's own 1,143 hooks into the bound.
+Injection p99 (273.9 ms) and two session-start packs without `summary_pending` are reported rather
 than gated — they belong to the timing work.
 
 What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a
