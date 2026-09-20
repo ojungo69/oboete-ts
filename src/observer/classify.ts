@@ -156,14 +156,17 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  * sentence tiled out of the request, and the second one is scored, so a field tiled out of quoted
  * fragments cannot exempt itself whole.
  *
- * A junction that changes script is the other shape: the framing the prompt asks for ("Durable
+ * A junction whose script is new is the other shape: the framing the prompt asks for ("Durable
  * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
- * honest quote in another script. The comparison is against every script the chain of adjacent runs
- * has already held, not only the run before, so an identifier quoted between two fragments of one
- * script does not buy them the framing exemption. Nothing without a script breaks the chain, neither
- * a quoted run of punctuation nor a separator the field inserted itself; words of its own do. Scoring that quote would fail the field the exemption exists for,
- * so that junction is left alone. A field that quotes twice with words of its own between them has
- * no junction either, and neither has a field that is one quote.
+ * honest quote in another script. Scoring that quote would fail the field the exemption exists for,
+ * so that junction is left alone.
+ *
+ * "New" is measured against every script the chain of runs has already held, not only the run
+ * before, so an identifier quoted between two fragments of one script does not buy them the framing
+ * exemption. Nothing without a script breaks the chain — neither a quoted run of punctuation nor a
+ * separator the field inserted itself — and words of the field's own do, which is why a field that
+ * quotes twice with prose between the quotes has no junction at all. Neither has a field that is
+ * one quote.
  */
 function unquoted(text: string, corpus: QuotedCorpus): string {
   // The worker appends the omission marker itself, so its words are nobody's answer — unless they
