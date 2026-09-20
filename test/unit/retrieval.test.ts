@@ -883,16 +883,22 @@ test('searchMemories still returns the fact-bearing memory with a non-matching s
     const paths = oboetePaths(home);
     const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
     try {
+      // Japanese, so it shares no character trigram with the English prompt and the prompt holds no
+      // CJK segment to query the bigram index with: the row is in the corpus and matches nothing.
       seedPairCorpus(opened.db, {
         id: 'm_unrelated',
-        title: 'Hydrazine tank',
-        body: 'The hydrazine tank uses a burst disk.',
+        title: '配管の設計',
+        body: '来週の会議で配管の設計を見直す。',
       });
       const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 });
+      const ids = found.map((row) => row.id);
       assert.ok(
-        found.some((row) => row.id === 'm_fact'),
-        `fact-bearing memory absent with a sixth row; returned ${found.map((row) => row.id).join(', ') || '(none)'}`,
+        ids.includes('m_fact'),
+        `fact-bearing memory absent with a sixth row; returned ${ids.join(', ') || '(none)'}`,
       );
+      // Admission is the index's own match: a row the query does not match is not returned, which is
+      // what keeps "no threshold" from meaning "everything".
+      assert.ok(!ids.includes('m_unrelated'), `the non-matching row was returned; got ${ids.join(', ')}`);
     } finally {
       opened.db.close();
     }
@@ -900,14 +906,17 @@ test('searchMemories still returns the fact-bearing memory with a non-matching s
 });
 
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
+  // Distinct bodies, or MMR drops b and c as duplicates of a and the comparison below is between
+  // two one-element lists, which no rescaling could change.
   const rows = [
-    row({ id: 'a', scoreTrigram: -0.4361279, scoreCjk: -0.01 }),
-    row({ id: 'b', scoreTrigram: -0.0000064033, scoreCjk: -0.008 }),
-    row({ id: 'c', scoreTrigram: -0.0000046696, scoreCjk: null }),
+    row({ id: 'a', title: 'rotation', body: 'the deployment key rotates monthly', scoreTrigram: -0.4361279, scoreCjk: -0.01 }),
+    row({ id: 'b', title: 'colour', body: 'the distribution colour is amber', scoreTrigram: -0.0000064033, scoreCjk: -0.008 }),
+    row({ id: 'c', title: 'retries', body: 'three retries, then give up', scoreTrigram: -0.0000046696, scoreCjk: null }),
   ];
   const options = { lambda: 0.5, budgetChars: 10_000, limit: 10 };
   const selected = (input: RankRow[]) => rankCandidates(input, options).included.map((item) => item.id);
   const base = selected(rows);
+  assert.ok(base.length > 1, `the pin needs more than one survivor to compare; got ${base.join(', ')}`);
   assert.deepEqual(
     selected(
       rows.map((item) => ({
