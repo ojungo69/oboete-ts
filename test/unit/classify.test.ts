@@ -316,6 +316,31 @@ test('a page that reaches a tool call\'s tail carries its name, and the name exe
   assert.equal(checkLanguage(inputWithHint(hint, [page]), titled), 'ok');
 });
 
+test('a field that is only the omission marker is the provider\'s own words', () => {
+  // `trimBody` returns a body under `MAX_BODY` untouched and never reduces one to the marker alone,
+  // so a field that is nothing but the marker was written by the provider and is scored like any
+  // other. Stripping it unconditionally left an empty residual, which agrees with every hint.
+  const events = [{ id: 'e1', kind: 'prompt', text: '配布の設定を確認しました。' }];
+  const marker = output(observation({ title: '配布の記録', body: '... (+1 omitted)' }));
+  assert.equal(checkLanguage(inputWithHint('ja', events), marker), 'mismatch');
+  // The shape the marker exists for is unchanged: content of the request's own language, trimmed.
+  const trimmed = output(observation({ title: '配布の記録',
+    body: '配布の設定を確認しました。\n... (+1 omitted)' }));
+  assert.equal(checkLanguage(inputWithHint('ja', events), trimmed), 'ok');
+});
+
+test('a supplementary-plane character is one coincidence, not a quote', () => {
+  // `𠮷` is two UTF-16 units and one character, so a length in units let it past the guard that
+  // exists to stop a single shared character from exempting a field made of it.
+  const events = [{ id: 'e1', kind: 'prompt', text: 'The registry lists 𠮷 among its entries.' }];
+  const single = output(observation({ title: '𠮷', body: '𠮷' }));
+  assert.equal(checkLanguage(inputWithHint('en', events), single), 'mismatch');
+  // Two characters the request carries whole are still a quote.
+  const pair = output(observation({ title: '𠮷野', body: '𠮷野' }));
+  const carries = [{ id: 'e1', kind: 'prompt', text: 'Keep this value exactly: 𠮷野' }];
+  assert.equal(checkLanguage(inputWithHint('en', carries), pair), 'ok');
+});
+
 test('a short coincidence does not exempt a field', () => {
   // '色' appears inside the quoted fact, but one shared character is not a quotation.
   const fact = '配布色は琥珀。';

@@ -158,12 +158,17 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  * has no junction, and neither has a field that is one quote.
  */
 function unquoted(text: string, corpus: QuotedCorpus): string {
-  // The worker appends the omission marker itself, so its words are nobody's answer.
-  const subject = normalizeForIdentity(text.replace(TRIM_MARKER, ''));
+  // The worker appends the omission marker itself, so its words are nobody's answer — unless they
+  // are the whole field, which the worker never writes: `trimBody` leaves a body under `MAX_BODY`
+  // alone, so a field that is only the marker came from the provider and is scored like any other.
+  const trimmed = text.replace(TRIM_MARKER, '');
+  const subject = normalizeForIdentity(trimmed === '' ? text : trimmed);
   // A field the request carries whole is a quote even when it is shorter than a run: `琥珀色` is a
   // fact somebody asked to keep verbatim, not a coincidence. One character is still a coincidence —
-  // every CJK character of a Japanese request would exempt a title made of it.
-  if (subject.length > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
+  // every CJK character of a Japanese request would exempt a title made of it. Counted in code
+  // points, because a supplementary-plane character such as `𠮷` is two UTF-16 units and
+  // one coincidence.
+  if ([...subject].length > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
   let residual = '';
   let index = 0;
   let previousRunEnd = -1;
