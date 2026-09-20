@@ -2739,10 +2739,10 @@ What a worker costs while a reader holds the database open and capture keeps arr
 what the product writes or what the run itself started (`logs/observe.log` and the `run start pid=`
 it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, the database and its WAL).
 The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-20
-against `1a83a019` on both supported Node versions.
+against `2b633dab` on both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
-the resident worker, then a hold of a read-only connection of at least 20 seconds (26.7 s and 26.6 s
+the resident worker, then a hold of a read-only connection of at least 20 seconds (25.4 s and 26.8 s
 measured, the rest being the session-end hooks and the wait for a batch to overlap the hold) while
 20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and again after the drain and
 stop.
@@ -2751,9 +2751,9 @@ Four checks are gated and pass on Node 24.16.0 and 22.23.1: no missing, duplicat
 failed-classification source and each session's `session_start`, `session_end`,
 `last_assistant_message` and `turn_end` stored exactly once; `pending = 0`, `liveBatches = 0`,
 `endReason = stopped`; the WAL recycling to 0 after the product's own stop path runs
-`wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (108.43 MiB and 100.91 MiB). Injection
-p99 (276.1 ms), two session-start packs without `summary_pending`, and a handful of phase B hooks
-that took about 3 s on a machine shared with an interactive session (#210) are reported rather than
+`wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (108.34 MiB and 100.39 MiB). Injection
+p99 (283.7 ms), two session-start packs without `summary_pending`, and the four phase B hooks that
+ran over a second on a machine shared with an interactive session (#210) are reported rather than
 gated — they belong to the timing work.
 
 What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a

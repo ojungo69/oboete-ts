@@ -137,7 +137,7 @@ Owner amendment, 2026-09-10:
 - [ ] T042 Measure 1,000/10,000/100,000-event resources and seven days of real use with `src/fixture/replay.ts`
   and `scripts/measure-cold-start.mjs`; include local-model consumption. Status: the 1,000-event leg is done
   on both supported Node versions (`scripts/measure-resources.mjs`, receipts in
-  `docs/evidence/memory-core-2026-09/resource-sweep.md`): worker peak `VmHWM` 108.43 / 100.91 MiB against a
+  `docs/evidence/memory-core-2026-09/resource-sweep.md`): worker peak `VmHWM` 108.34 / 100.39 MiB against a
   150 MiB bound, the WAL growing under a held reader and recycling to 0 after the product's own stop path,
   no spool file at any sample, and every hook exiting 0. The 10,000- and 100,000-event legs are #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
@@ -419,12 +419,12 @@ writers require separate worktrees. No deployment follows merely from an increme
   and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
   temporary home and reads only what the product writes or what the run itself started, in two phases: a replay of
   `test/fixtures/events-1000.jsonl` through the real hooks and the resident worker, then a hold of a
-  read-only connection of at least 20 seconds (26.7 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
+  read-only connection of at least 20 seconds (25.4 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
   24.16.0 and 22.23.1 — no missing, duplicate or failed-classification source; `pending=0`,
   `liveBatches=0`, `endReason=stopped`; the WAL recycling to 0 after `wal_checkpoint(TRUNCATE)`; and
-  peak `VmHWM` under 150 MiB. Injection p99 (276.1 ms), the two session-start packs without
-  `summary_pending` and a few ~3 s phase B hooks on a machine shared with an interactive session
-  (#210) are reported, not gated, and belong to the timing work rather than this sweep.
+  peak `VmHWM` under 150 MiB. Injection p99 (283.7 ms), the two session-start packs without
+  `summary_pending` and four phase B hooks over a second on a machine shared with an interactive
+  session (#210) are reported, not gated, and belong to the timing work rather than this sweep.
   What the run cannot say is stated in the evidence file: a half-minute hold shows no long-run growth
   (#268), 1,051 events is not scale (#267), and `preset = "none"` exercises no provider at all.
 - T040 (open, 2026-09-17): the macOS leg now runs on a GitHub-hosted `macos-15` runner through
