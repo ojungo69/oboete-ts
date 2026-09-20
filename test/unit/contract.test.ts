@@ -206,6 +206,13 @@ test('trimObservation keeps content when the body opens with blank lines', () =>
   }
 });
 
+test('trimObservation keeps the indentation of the first line that has content', () => {
+  // Blank lines in front of the content are not content; the spaces that open a content line are,
+  // and a body whose exact spelling matters (indented code, a padded value) must keep them.
+  const trimmed = trimObservation(observation({ body: `\n    ${'x'.repeat(2_500)}` }));
+  assert.ok(trimmed.body.startsWith('    x'), JSON.stringify(trimmed.body.slice(0, 12)));
+});
+
 test('trimObservation returns nothing for a body that is blank all the way through', () => {
   // The alternative is a marker that omits nothing, which `classify.ts` then scores as the
   // provider's own English and sends a whole valid batch to the fallback.

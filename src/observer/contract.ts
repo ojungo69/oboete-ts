@@ -415,14 +415,16 @@ function trimBody(body: string): string {
     if (next.length <= MAX_BODY) return next;
   }
   // Not even the first line fits, so it is cut by characters: a body of one long line must keep
-  // its content, not become the omission marker alone (contracts/observer.md trim order). The cut
-  // starts at the content, because blank space long enough would spend the whole budget and leave
-  // the marker with nothing in front of it — the same loss the loop above refuses.
+  // its content, not become the omission marker alone (contracts/observer.md trim order). Blank
+  // lines in front of it go, because blank space long enough would spend the whole budget and leave
+  // the marker with nothing before it — the same loss the loop above refuses. Only whole lines: the
+  // indentation of the first line that has content belongs to that line and is kept verbatim.
   const suffix = `... (+${lines.length} omitted)`;
-  const head = body.trimStart().slice(0, Math.max(0, MAX_BODY - suffix.length - 1));
+  const content = body.replace(/^(?:[^\S\n]*\n)+/, '');
+  const head = content.slice(0, Math.max(0, MAX_BODY - suffix.length - 1));
   // A body that is blank all the way through omits nothing worth saying so, and a marker standing
   // alone is what `classify.ts` reads as the provider's own words.
-  return head === '' ? '' : `${head}\n${suffix}`;
+  return head.trim() === '' ? '' : `${head}\n${suffix}`;
 }
 
 export function shortenDisplayPath(path: string): string {

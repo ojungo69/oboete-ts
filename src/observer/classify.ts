@@ -153,9 +153,10 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  *
  * Where one run ends and the next begins with nothing between them, the join is the observer's:
  * the request carries each piece but never that sentence, so a field tiled out of quoted fragments
- * would otherwise exempt itself whole. One character of each such junction stays in the residual,
- * which is enough for it to be scored. A field that quotes twice with words of its own between them
- * has no junction, and neither has a field that is one quote.
+ * would otherwise exempt itself whole. The whole run that opens each such junction stays in the
+ * residual and is scored: keeping one character of it leaves nothing to score when that character
+ * is punctuation, which `scriptAgrees` reads as `other`. A field that quotes twice with words of
+ * its own between them has no junction, and neither has a field that is one quote.
  */
 function unquoted(text: string, corpus: QuotedCorpus): string {
   // The worker appends the omission marker itself, so its words are nobody's answer — unless they
@@ -175,13 +176,15 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   while (index < subject.length) {
     const length = quotedRun(subject, index, corpus);
     if (length === 0) {
-      residual += subject[index];
-      index += 1;
+      // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+      // reads a lone surrogate as `other`, which agrees with every hint. Advancing by the character
+      // also keeps every later run start on a boundary.
+      const character = String.fromCodePoint(subject.codePointAt(index) ?? 0);
+      residual += character;
+      index += character.length;
       continue;
     }
-    // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
-    // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
-    if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
+    if (index === previousRunEnd) residual += subject.slice(index, index + length);
     index += length;
     previousRunEnd = index;
   }
@@ -190,10 +193,12 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
 
 /**
  * How much of `subject` at `index` the request already carries, in UTF-16 units, or 0 when what is
- * there is not a quoted run.
+ * there is not a quoted run. `index` is always at the start of a character, and so is the end of
+ * what this returns.
  */
 function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number {
-  // The n-gram set answers the common case in constant time; only a real candidate is extended.
+  // The n-gram set answers the common case in constant time; only a real candidate is extended. Its
+  // grams are UTF-16 units, which can only admit a candidate the character count below rejects.
   if (!corpus.grams.has(subject.slice(index, index + MIN_QUOTED_RUN))) return 0;
   let length = MIN_QUOTED_RUN;
   while (index + length + 1 <= subject.length
@@ -205,9 +210,10 @@ function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number
   // field carries it alone; both are a run ending on half a character.
   const last = subject.codePointAt(index + length - 1) ?? 0;
   if (last > 0xFFFF || (last >= 0xD800 && last <= 0xDBFF)) length -= 1;
-  // Giving that half back can leave less than a run, and a shorter coincidence is not a quote: the
-  // field keeps those characters and is scored on them, which is what the minimum is for.
-  return length >= MIN_QUOTED_RUN ? length : 0;
+  // Counted in characters, and after the half goes back: two supplementary characters are four
+  // UTF-16 units and still a two-character coincidence. A coincidence is not a quote, so the field
+  // keeps those characters and is scored on them, which is what the minimum is for.
+  return [...subject.slice(index, index + length)].length >= MIN_QUOTED_RUN ? length : 0;
 }
 
 // ---------------------------------------------------------------------------

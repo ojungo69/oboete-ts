@@ -396,6 +396,25 @@ test('a supplementary-plane character is one coincidence, not a quote', () => {
   assert.equal(checkLanguage(inputWithHint('en', carries), pair), 'ok');
 });
 
+test('a junction of punctuation keeps the run that opens it, so a tiled field is still scored', () => {
+  // `scriptAgrees` reads a residual of punctuation as `other`, which agrees with every hint: a
+  // junction that falls on `-` would leave a field tiled out of the request with nothing scored.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'one part is abcd here' },
+    { id: 'e2', kind: 'prompt', text: 'and the other is -efgh there' },
+  ];
+  const tiled = output(observation({ title: '記録', body: 'abcd-efgh' }));
+  assert.equal(checkLanguage(inputWithHint('ja', events), tiled), 'mismatch');
+});
+
+test('two supplementary characters are four code units and still a coincidence', () => {
+  // The minimum run is four characters. Counting the units would make a pair of Han characters a
+  // quote, and the Japanese field that carries them would be exempted on an English hint.
+  const events = [{ id: 'e1', kind: 'prompt', text: 'the record keeps 𠮷𠮸y verbatim' }];
+  const shared = output(observation({ title: 'Record', body: '𠮷𠮸x' }));
+  assert.equal(checkLanguage(inputWithHint('en', events), shared), 'mismatch');
+});
+
 test('a short coincidence does not exempt a field', () => {
   // '色' appears inside the quoted fact, but one shared character is not a quotation.
   const fact = '配布色は琥珀。';
