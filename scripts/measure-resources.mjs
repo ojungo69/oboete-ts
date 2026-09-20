@@ -12,6 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const BUNDLE = join(ROOT, 'dist', 'oboete.mjs');
+// `scripts/build.mjs` copies `src/launcher.mjs` to the bundle and puts the product in a sibling the
+// launcher imports, so hashing the launcher alone would prove nothing about the code that ran.
+const ENGINE = join(ROOT, 'dist', 'engine.mjs');
 const CONFIG = '[observer]\npreset = "none"\n\n[worker]\nidle_exit_ms = 60000\n';
 const SAMPLE_MS = 250, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
 const TIME_BIN = '/usr/bin/time';
@@ -82,7 +85,11 @@ function requireCleanTree() {
   }
 }
 function bundleDigest() {
-  try { return createHash('sha256').update(readFileSync(BUNDLE)).digest('hex').slice(0, 16); } catch { return 'unknown'; }
+  try {
+    const hash = createHash('sha256');
+    for (const file of [BUNDLE, ENGINE]) hash.update(readFileSync(file));
+    return hash.digest('hex').slice(0, 16);
+  } catch { return 'unknown'; }
 }
 function loadAverage() { try { return readFileSync('/proc/loadavg', 'utf8').trim(); } catch { return 'unavailable'; } }
 // A file that is not there yet is zero bytes; a file this run may not read is not, and reporting it
@@ -869,7 +876,7 @@ function renderMarkdown(report) {
   let closing = 'Every listed check passed on this run.';
   if (report.error !== undefined) closing = `Harness error: ${report.error} Exit 2.`;
   else if (report.failed) closing = 'One or more checks failed. Exit 1.';
-  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`, bundle sha256 \`${report.bundleSha256 ?? 'unknown'}\`; the run refuses to start with a modified tracked file, so the commit names what ran.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
+  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`, sha256 of dist/oboete.mjs and dist/engine.mjs together \`${report.bundleSha256 ?? 'unknown'}\`; the run refuses to start with a modified tracked file, so the commit names what ran.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
 }
 async function phaseA(cli, paths, env) {
   const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs: REPLAY_TIMEOUT_MS, inheritStderr: true });
@@ -949,7 +956,9 @@ function requireInputs(cli) {
   try { lines = readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length; } catch (error) {
     throw new HarnessError(`fixture file cannot be read: ${cli.fixture} (${error instanceof Error ? error.message : String(error)})`);
   }
-  if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
+  for (const file of [BUNDLE, ENGINE]) {
+    if (!existsSync(file)) throw new HarnessError(`engine bundle not found: ${file}`);
+  }
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
   requireCleanTree();
   return lines;
