@@ -122,7 +122,7 @@ async function run(
   return { status, stdout, stderr };
 }
 
-test('search reports normalized lexical relevance and explains an empty result', async () => {
+test('search reports an ordering score and explains an empty result', async () => {
   await withFixture(async ({ home, repo, identity, otherIdentity }) => {
     const opened = openDatabase({ path: oboetePaths(home).db, timeoutMs: 1000 });
     insertRepo(opened.db, identity);
@@ -155,7 +155,8 @@ test('search reports normalized lexical relevance and explains an empty result',
     assert.equal(parsed.memories[0].id, hit);
     assert.equal(parsed.memories[0].type, 'decision');
     assert.match(parsed.memories[0].body, /150 milliseconds/);
-    assert.equal(parsed.memories[0].score, 1, 'the strongest lexical match has normalized relevance 1');
+    assert.equal(typeof parsed.memories[0].score, 'number');
+    assert.ok(parsed.memories[0].score > 0, 'the strongest lexical match has a positive ordering score');
     assert.ok(parsed.memories[0].reasons.length > 0);
 
     const compared = await run(runSearch, ['sqlite busy timeout', '--limit', '2', '--json'], repo);
@@ -164,7 +165,7 @@ test('search reports normalized lexical relevance and explains an empty result',
     const titleMatch = matches.find((memory) => memory.id === hit);
     const bodyMatch = matches.find((memory) => memory.id === bodyOnly);
     assert.ok(titleMatch && bodyMatch);
-    assert.ok(titleMatch.score > bodyMatch.score, 'a full-title match outranks a body-only match in relevance');
+    assert.ok(titleMatch.score > bodyMatch.score, 'a full-title match outranks a body-only match in ordering score');
 
     const empty = await run(runSearch, ['meteor zebra quartz'], repo);
     assert.equal(empty.status, 0);

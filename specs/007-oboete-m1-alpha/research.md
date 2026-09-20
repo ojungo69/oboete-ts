@@ -114,11 +114,18 @@ approval before implementation starts (task 0).
   `memories_fts_cjk` (`unicode61` over generated CJK bigrams; runs include ー 々 ・). Query via
   `Intl.Segmenter`; non-CJK segments >= 3 chars → trigram terms; CJK segments → bigram terms;
   one-character particles dropped; `LIKE` only when no indexed term remains. BM25 per table
-  normalized by the best score; threshold (default 0.3) on normalized BM25; RRF (k = 60) orders
-  across tables (`LIKE` never votes); MMR (lambda 0.5, character-trigram cosine) removes near
-  duplicates; cut at the caller's character budget. FTS5 tables are not `STRICT`.
-- **Reviewer changes**: threshold on BM25; particles; `LIKE` non-voting; long-vowel marks; no
-  `UNINDEXED` shortcut; no `STRICT` on virtual tables.
+  orders the candidates of that table and decides nothing else; RRF (k = 60) orders across tables
+  (`LIKE` never votes); MMR (lambda 0.5, character-trigram cosine) removes near duplicates; cut at
+  the caller's character budget. FTS5 tables are not `STRICT`.
+- **Reviewer changes**: particles; `LIKE` non-voting; long-vowel marks; no `UNINDEXED` shortcut; no
+  `STRICT` on virtual tables.
+- **2026-09-20 (#275)**: the admission threshold on normalized BM25 is retired. A ratio to the best
+  score in the same result set says nothing about relevance when the set is small — FTS5 clamps the
+  IDF of a term that appears in more than half the documents, so on a five-row corpus every score
+  collapses together and the one memory holding the answer was dropped as `below_threshold`. What
+  bounds the volume is what already bounded it: the FTS `MATCH`, the per-index candidate limit (50
+  per index, up to 100 merged), MMR and the character budget. `injection.threshold` stays accepted
+  as a deprecated key so an existing `config.toml` still loads, and has no effect.
 
 ## R6. Detached worker, lease, spool, retention, reservations
 

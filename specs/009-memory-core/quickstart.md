@@ -2636,7 +2636,7 @@ a symlinked entry still runs the block, a renamed copy of the file does not.
 
 | Mutation | Failing assertion |
 | --- | --- |
-| `injection.threshold` config default raised to 0.99 (the live path; `DEFAULT_THRESHOLD` in `rank.ts` is only the fallback and mutating it changes nothing) | corpus: `fact f-ja-19 query 鍵ローテは月のいつ？ position absent above []` |
+| a magnitude cut reintroduced before `rrfFuse` (a candidate whose raw `bm25()` is within a factor of the FTS5 clamp is dropped) | ranking: `rankCandidates keeps a clamp-scale BM25 candidate` — `clamp-scale candidate omitted; included strong omitted clamped` |
 | equal scores prefer the newer `created_at` | age: `[z_new, a_old]` instead of `[a_old, z_new]` |
 | normalized score × 0.6 for rows older than a day | age: the same |
 | `m.valid_to IS NULL` removed from `memoryScope` | supersession: default search returned the old row |
@@ -2658,9 +2658,15 @@ a symlinked entry still runs the block, a renamed copy of the file does not.
   rare trigram scores -0.436 and the other two -0.0000064 and -0.0000047. Normalized by the ratio
   to the best score, both fall to about 0.00001, below the 0.3 threshold, and the memory holding
   the three exact facts is omitted. The same prompt against the same rows one memory later includes
-  all three. That is #275, and T023 stays open for it. Those five rows and that recall prompt are carried
-  verbatim in `test/unit/retrieval.test.ts` as a skipped test, so the fix un-skips a failing artifact
-  rather than writing a new one. The artifact names the rows
+  all three. That is #275. Those five rows and that recall prompt were carried verbatim in
+  `test/unit/retrieval.test.ts` as a skipped test, so the fix un-skipped a failing artifact rather
+  than writing a new one. **Fixed on 2026-09-20** by retiring the admission threshold rather than
+  repairing it: a ratio to the best score in one result set cannot mean relevance when the clamp has
+  made the magnitudes meaningless, and the two candidate replacement gates were measured and rejected
+  on this very receipt (`.specify/bugs/small-corpus-threshold-drop/assessment.md`). BM25 still orders
+  each index; what bounds the volume is the `MATCH`, the per-index candidate limit, MMR and the
+  budget. The mutation that guarded the old mechanism is retired with it, and the row above replaces
+  it. The artifact names the rows
   `m_confirm`, `m_decision` and `m_fact` for `m_c2bfcff0`, `m_363fe065` and `m_9da36e8d`, plus
   `m_checkpoint` and `m_request` for the pair's two session summaries. Keep all five. Measured on
   2026-09-18 by inserting each corpus and calling `searchMemories` with the pair's recall prompt: the

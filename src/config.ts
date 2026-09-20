@@ -134,7 +134,8 @@ const observerSchema = z.strictObject({
 
 const injectionSchema = z.strictObject({
   context_fraction: z.number().gt(0).lte(0.5).default(0.05),
-  threshold: z.number().gte(0).lte(1).default(0.3),
+  // Retired: accepted so an existing config.toml still loads. Ranking ignores it.
+  threshold: z.number().gte(0).lte(1).optional(),
 });
 
 /**

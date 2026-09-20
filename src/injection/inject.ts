@@ -188,7 +188,6 @@ async function promptPack(
     ...packInput(context, channel, validation),
     state: pending ? 'pending' : 'built',
     prompt,
-    threshold: context.config.injection.threshold,
     excludeMemoryIds: priorPack?.items.filter((item) => item.decision === 'planned' && item.memoryId !== null)
       .map((item) => item.memoryId!),
   });

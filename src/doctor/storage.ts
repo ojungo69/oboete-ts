@@ -304,6 +304,19 @@ function workerSettings(config: OboeteConfig | null, paths: OboetePaths): string
   return `Resident mode is ${config.worker.resident ? 'enabled' : 'disabled'}, and the idle-exit timeout is ${config.worker.idle_exit_ms} milliseconds. ${stopState}`;
 }
 
+function withIgnoredThreshold(item: DoctorItem, config: OboeteConfig | null): DoctorItem {
+  const value = config?.injection.threshold;
+  if (value === undefined) return item;
+  const reason = `${item.reason} The deprecated injection.threshold value ${value} is ignored.`;
+  if (item.status !== 'healthy') return { ...item, reason };
+  return warning(
+    item.item,
+    reason,
+    'Retrieval ranking no longer uses an admission threshold.',
+    'Remove injection.threshold from the configuration file; it has no effect.',
+  );
+}
+
 export function workerItem(
   db: DatabaseSync | null,
   now: number,
@@ -320,14 +333,17 @@ export function workerItem(
       'Queued events cannot be summarized until storage is open.',
       '`oboete doctor` after storage is repaired.',
     );
-    return { ...unread, reason: `${unread.reason} ${settings}` };
+    return withIgnoredThreshold({ ...unread, reason: `${unread.reason} ${settings}` }, config);
   }
   try {
     const row = db.prepare('SELECT owner_token, pid, heartbeat_at FROM worker_lease WHERE id = 1').get();
     if (row?.owner_token == null) {
-      return healthy(
-        'worker',
-        `No worker is running; a hook starts one when work is queued. ${settings}`,
+      return withIgnoredThreshold(
+        healthy(
+          'worker',
+          `No worker is running; a hook starts one when work is queued. ${settings}`,
+        ),
+        config,
       );
     }
     const processId = asNumber(row.pid) ?? 0;
@@ -335,25 +351,34 @@ export function workerItem(
       const heartbeat = asNumber(row.heartbeat_at);
       const seconds =
         heartbeat === null ? 0 : Math.max(0, Math.round((now - heartbeat) / 1000));
-      return degraded(
-        'worker',
-        `The worker process ${processId} holds the lease but its last heartbeat was ${seconds} seconds ago. ${settings}`,
-        'Queued events are not summarized until the lease is reclaimed.',
-        '`oboete observe` (it reclaims a stale lease and releases it when the queue is empty)',
+      return withIgnoredThreshold(
+        degraded(
+          'worker',
+          `The worker process ${processId} holds the lease but its last heartbeat was ${seconds} seconds ago. ${settings}`,
+          'Queued events are not summarized until the lease is reclaimed.',
+          '`oboete observe` (it reclaims a stale lease and releases it when the queue is empty)',
+        ),
+        config,
       );
     }
     const heartbeat = asNumber(row.heartbeat_at) ?? now;
     const seconds = Math.max(0, Math.round((now - heartbeat) / 1000));
-    return healthy(
-      'worker',
-      `The worker process ${processId} is alive (heartbeat ${seconds} seconds ago). ${settings}`,
+    return withIgnoredThreshold(
+      healthy(
+        'worker',
+        `The worker process ${processId} is alive (heartbeat ${seconds} seconds ago). ${settings}`,
+      ),
+      config,
     );
   } catch (error) {
-    return degraded(
-      'worker',
-      `The worker lease could not be read: ${describe(error)}. ${settings}`,
-      'Queued events are not summarized until the lease is reclaimed.',
-      '`oboete observe` (it reclaims a stale lease and releases it when the queue is empty)',
+    return withIgnoredThreshold(
+      degraded(
+        'worker',
+        `The worker lease could not be read: ${describe(error)}. ${settings}`,
+        'Queued events are not summarized until the lease is reclaimed.',
+        '`oboete observe` (it reclaims a stale lease and releases it when the queue is empty)',
+      ),
+      config,
     );
   }
 }

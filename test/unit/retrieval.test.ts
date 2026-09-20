@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
+import { configSchema } from '../../src/config.js';
+import { workerItem } from '../../src/doctor/storage.js';
 import { openDatabase } from '../../src/db/open.js';
 import { grantVisibility } from '../../src/db/queries.js';
 import type { Line } from '../../src/fixture/replay.js';
+import { CHANNEL_CAPS } from '../../src/injection/budget.js';
+import { createInjection, planItems } from '../../src/injection/ledger.js';
+import { buildPromptPack } from '../../src/injection/pack.js';
 import { runGet, searchMemories } from '../../src/memories-cli.js';
 import { oboetePaths } from '../../src/paths.js';
 import { resolveRepoIdentity } from '../../src/repo-identity.js';
@@ -14,22 +19,28 @@ import { buildMatch, cjkBigrams, isCjk, segmentQuery } from '../../src/retrieval
 import { searchCandidates } from '../../src/retrieval/query.js';
 import type { RankRow } from '../../src/retrieval/rank.js';
 import {
-  applyThreshold,
   charTrigramCosine,
   cutToBudget,
   mmrSelect,
-  normalizeBm25,
   rankCandidates,
   rrfFuse,
 } from '../../src/retrieval/rank.js';
+import { runWhy } from '../../src/why.js';
 import {
   buildFactSeedingPrompt,
   factSet,
-  factStem,
   recallPrompt,
 } from '../../scripts/e2e/probe-lib/isolated-agent.mjs';
 import { repositoryRoot } from '../helpers/compile-cache.js';
 import { withTempHome } from '../helpers/home.js';
+import {
+  PAIR_FACTS,
+  PAIR_RECALL_PROMPT,
+  PAIR_ROWS,
+  PAIR_SEEDING_PROMPT,
+  PAIR_STEM,
+} from '../helpers/pair-275.js';
+import { seedWorkBinding } from '../helpers/work.js';
 
 const SCOPE_A = { where: 'm.repo_id = ? AND m.deleted_at IS NULL', params: ['repo_a'] };
 
@@ -93,6 +104,25 @@ function insertSearchable(
     memory.supersededBy ?? null,
     memory.id,
   );
+}
+
+function seedPairCorpus(
+  db: DatabaseSync,
+  extra?: { id: string; title: string; body: string },
+): void {
+  insertRepo(db, 'repo_a', '/tmp/oboete-a');
+  for (const memory of PAIR_ROWS) {
+    insertSearchable(db, {
+      id: memory.id,
+      repoId: 'repo_a',
+      title: memory.title,
+      body: memory.body,
+      type: memory.type,
+    });
+  }
+  if (extra !== undefined) {
+    insertSearchable(db, { id: extra.id, repoId: 'repo_a', title: extra.title, body: extra.body });
+  }
 }
 
 type FactTag = NonNullable<NonNullable<Line['tags']>['fact']>;
@@ -468,55 +498,17 @@ test('searchCandidates does not throw on FTS5 syntax', async () => {
   });
 });
 
-test('normalizeBm25 gives 1.0 to the best score', () => {
-  const out = normalizeBm25(
-    [
-      row({ id: 'best', scoreTrigram: -10 }),
-      row({ id: 'mid', scoreTrigram: -5 }),
-      row({ id: 'weak', scoreTrigram: -2 }),
-    ],
-    'scoreTrigram',
-  );
-  assert.equal(out.find((item) => item.id === 'best')?.normTrigram, 1);
-  assert.equal(out.find((item) => item.id === 'mid')?.normTrigram, 0.5);
-  assert.equal(out.find((item) => item.id === 'weak')?.normTrigram, 0.2);
-});
-
-test('applyThreshold drops a row below 0.3 and keeps LIKE-only last', () => {
-  const normalized = normalizeBm25(
-    [
-      row({ id: 'best', scoreTrigram: -10 }),
-      row({ id: 'weak', scoreTrigram: -2 }),
-      row({ id: 'like', viaLike: true, title: 'ok', body: 'ok' }),
-    ],
-    'scoreTrigram',
-  );
-  const { kept, dropped } = applyThreshold(normalized, 0.3);
-  assert.deepEqual(
-    dropped.map((item) => item.id),
-    ['weak'],
-  );
-  assert.deepEqual(
-    kept.map((item) => item.id),
-    ['best', 'like'],
-  );
-});
-
 test('rrfFuse ranks a row present in both tables above a row in one', () => {
   const fused = rrfFuse([
     row({
       id: 'both',
       scoreTrigram: -10,
       scoreCjk: -8,
-      normTrigram: 1,
-      normCjk: 1,
     }),
     row({
       id: 'one',
       scoreTrigram: -9,
       scoreCjk: null,
-      normTrigram: 0.9,
-      normCjk: 0,
     }),
     row({ id: 'like', viaLike: true, title: 'ok', body: 'ok' }),
   ]);
@@ -599,7 +591,7 @@ test('cutToBudget omits overflow rows with reason budget', () => {
   );
 });
 
-test('rankCandidates returns bm25, rrf and mmr scores on included rows', () => {
+test('rankCandidates returns rrf and mmr scores on included rows', () => {
   const result = rankCandidates(
     [
       row({ id: 'both', title: 'alpha one', body: 'unique alpha body', scoreTrigram: -10, scoreCjk: -8 }),
@@ -612,17 +604,19 @@ test('rankCandidates returns bm25, rrf and mmr scores on included rows', () => {
         scoreCjk: -7,
       }),
     ],
-    { threshold: 0.3, lambda: 0.5, budgetChars: 10_000, limit: 10 },
+    { lambda: 0.5, budgetChars: 10_000, limit: 10 },
   );
   assert.ok(result.included.length >= 1);
   for (const item of result.included) {
-    assert.equal(typeof item.score_bm25, 'number');
     assert.equal(typeof item.score_rrf, 'number');
     assert.equal(typeof item.score_mmr, 'number');
   }
-  assert.ok(result.included.every((item) => item.id !== 'weak'));
-  assert.ok(result.omitted.some((item) => item.id === 'weak' && item.reason === 'below_threshold'));
+  assert.ok(result.included.some((item) => item.id === 'weak'));
   assert.ok(result.omitted.some((item) => item.id === 'dup' && item.reason === 'mmr_redundant'));
+  assert.equal(
+    result.omitted.map((item) => item.reason).join(','),
+    'mmr_redundant',
+  );
 });
 
 // Pin: measured on current product code (title = fact id, body = sentence) through searchMemories.
@@ -701,7 +695,7 @@ test('rankCandidates ignores created_at when trigram and cjk scores are equal', 
     scoreCjk: -2,
     created_at: newer,
   });
-  const options = { threshold: 0.3, lambda: 0.5, budgetChars: 10_000, limit: 10 };
+  const options = { lambda: 0.5, budgetChars: 10_000, limit: 10 };
   const first = rankCandidates([alpha, omega], options);
   const swapped = rankCandidates(
     [
@@ -846,39 +840,6 @@ test('searchMemories returns two distinct facts that share a title when they are
   });
 });
 
-/**
- * The pair the artifact below reproduces: the `claude-to-codex` leg of that run, named the way
- * `scripts/e2e/isolated-user.mjs` names it. This does not migrate if `factStem` changes — the
- * seeding prompt below spells the stem out, so a change there fails this file instead. That is the
- * behaviour a frozen run record wants: the artifact must keep saying what the run said.
- */
-const PAIR_STEM = factStem('2026-09-17T15-05-08-894Z', 'claude', 'codex');
-
-const PAIR_FACTS: [string, string, string] = [
-  `${PAIR_STEM}-1: the build token is cedar.`,
-  `${PAIR_STEM}-2: the release bird is heron.`,
-  `${PAIR_STEM}-3: 配布色は琥珀。`,
-];
-
-/** `recallPrompt('codex', false)`: what the receiving agent was asked. */
-const PAIR_RECALL_PROMPT = [
-  'Before the tool call, remember the fact lines already present inside the oboete memory context markers.',
-  "Use the shell tool exactly once to run: sed -n '1,20p' NOTES.md",
-  'Make no other tool call.',
-  'After the result, reply with every remembered fact line verbatim, joined by |. Do not derive the answer from NOTES.md.',
-].join('\n');
-
-/** `buildFactSeedingPrompt(PAIR_FACTS)`: what the sending agent was asked, and what its free summary quotes. */
-const PAIR_SEEDING_PROMPT = [
-  'These three exact strings are durable facts about this repository. Preserve them verbatim:',
-  ...PAIR_FACTS,
-  'Use exactly one tool call and no other tools. In that one call, use the shell tool to run:',
-  "printf '%s\\n' 'fact-2026-09-17T15-05-08-894Z-claude-to-codex-1: the build token is cedar.'"
-    + " 'fact-2026-09-17T15-05-08-894Z-claude-to-codex-2: the release bird is heron.'"
-    + " 'fact-2026-09-17T15-05-08-894Z-claude-to-codex-3: 配布色は琥珀。' >> NOTES.md",
-  'After the tool result, reply on one line with the same three exact strings joined by |.',
-].join('\n');
-
 // Runs whether or not the artifact below is skipped: a reword in the probe library must not leave
 // that corpus reproducing a prompt no agent sends. The comparison is exact, against what the library
 // actually returns, so a change to the prompt text fails it — but only once the change is built.
@@ -899,75 +860,13 @@ test('the pinned pair prompts are still the ones the probe library sends', () =>
 
 // Artifact for issue #275: the five memories of the `claude-to-codex` pair of the
 // 2026-09-17T15-05-08-894Z dogfood run (JST 2026-09-18) as they stood when the receiving prompt
-// pack was built, copied verbatim from that pair's database (the run's copy of it is
-// `/var/tmp/oboete-dogfood-upgrade/all0917/claude-to-codex/memory.db`, verified row for row on
-// 2026-09-17; that copy is the dogfood account's and the cron keeps writing to it, so these rows are
-// the frozen ones). `m_fact` carries the three facts the recall prompt asks for and the pack dropped
-// it as `below_threshold`, keeping `m_confirm`, which carries none of them.
-//
-// Keep all five rows; quickstart E12 Limits says what trimming the two summaries would change.
-//
-// What it does not model: the pair's checkpoint is work-scoped in production, while these rows take
-// the file's ordinary project grant and are excluded by `m.type <> 'session_summary'` alone; the
-// three searchable rows were `feature`, `decision` and `feature` in the run and are `discovery`
-// here, which nothing in retrieval reads; and all five rows share one `created_at`, so nothing here
-// can show a recency- or retirement-driven drop.
-//
-// Skipped until #275 is fixed. Un-skip it with the fix. On its own this test cannot tell a real
-// fix from one that lowers the threshold until everything is admitted, so #275 carries the
-// counter-pin it has to land with: an unrelated memory in the same corpus must still be omitted.
-// The counter-pin is not written here because it is the fix's evidence, not this artifact's.
-test('searchMemories returns the fact-bearing memory of a five-row corpus', { skip: 'issue #275' }, async () => {
+// pack was built. Rows live in `test/helpers/pair-275.ts`.
+test('searchMemories returns the fact-bearing memory of a five-row corpus', async () => {
   await withTempHome((home) => {
     const paths = oboetePaths(home);
     const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
     try {
-      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
-      insertSearchable(opened.db, {
-        id: 'm_checkpoint',
-        repoId: 'repo_a',
-        type: 'session_summary',
-        title: 'Record three exact strings as durable facts in NOTES.md.',
-        body:
-          'Purpose\nRecord three exact strings as durable facts in NOTES.md.\n\nConstraints\n' +
-          '- Preserve the three exact strings verbatim.\n- Use exactly one tool call.\n' +
-          '- Append the strings to NOTES.md.\n\nDecisions\n' +
-          '- The three exact strings will be appended to NOTES.md.\n\nOutstanding\n' +
-          '- Verify the contents of NOTES.md to ensure the strings were written correctly.',
-      });
-      insertSearchable(opened.db, {
-        id: 'm_fact',
-        repoId: 'repo_a',
-        title: 'Durable facts recorded to NOTES.md',
-        body:
-          'Three exact strings were written to NOTES.md to serve as durable facts about the repository. ' +
-          `The strings are: '${PAIR_FACTS[0]}', '${PAIR_FACTS[1]}', and '${PAIR_FACTS[2]}'.`,
-      });
-      insertSearchable(opened.db, {
-        id: 'm_decision',
-        repoId: 'repo_a',
-        title: 'Use NOTES.md for durable facts',
-        body: 'A decision was made to append the three exact strings to NOTES.md to preserve them as durable facts about the repository.',
-      });
-      insertSearchable(opened.db, {
-        id: 'm_confirm',
-        repoId: 'repo_a',
-        title: 'Assistant message confirms fact strings',
-        body: "The assistant's final message contained the three exact strings joined by a pipe character (|), confirming the successful execution of the tool call.",
-      });
-      // The sending session's free summary: the seeding prompt the agent received, with the batch's
-      // empty accounting tail, and the truncated title the summariser gave it.
-      insertSearchable(opened.db, {
-        id: 'm_request',
-        repoId: 'repo_a',
-        type: 'session_summary',
-        title:
-          'These three exact strings are durable facts about this repository. Preserve them verbatim:\n' +
-          'fact-2026-09-17T15-05-08-894Z',
-        body:
-          `request: ${PAIR_SEEDING_PROMPT}\ninvestigated:\nlearned: Assistant message confirms fact strings, ` +
-          'Durable facts recorded to NOTES.md, Use NOTES.md for durable facts\ncompleted:\nnext_steps:',
-      });
+      seedPairCorpus(opened.db);
       const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 });
       assert.ok(
         found.some((row) => row.id === 'm_fact'),
@@ -976,5 +875,227 @@ test('searchMemories returns the fact-bearing memory of a five-row corpus', { sk
     } finally {
       opened.db.close();
     }
+  });
+});
+
+test('searchMemories still returns the fact-bearing memory with a non-matching sixth row', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      seedPairCorpus(opened.db, {
+        id: 'm_unrelated',
+        title: 'Hydrazine tank',
+        body: 'The hydrazine tank uses a burst disk.',
+      });
+      const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 });
+      assert.ok(
+        found.some((row) => row.id === 'm_fact'),
+        `fact-bearing memory absent with a sixth row; returned ${found.map((row) => row.id).join(', ') || '(none)'}`,
+      );
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
+  const rows = [
+    row({ id: 'a', scoreTrigram: -0.4361279, scoreCjk: -0.01 }),
+    row({ id: 'b', scoreTrigram: -0.0000064033, scoreCjk: -0.008 }),
+    row({ id: 'c', scoreTrigram: -0.0000046696, scoreCjk: null }),
+  ];
+  const options = { lambda: 0.5, budgetChars: 10_000, limit: 10 };
+  const selected = (input: RankRow[]) => rankCandidates(input, options).included.map((item) => item.id);
+  const base = selected(rows);
+  assert.deepEqual(
+    selected(
+      rows.map((item) => ({
+        ...item,
+        scoreTrigram: item.scoreTrigram === null ? null : item.scoreTrigram * 1_000,
+      })),
+    ),
+    base,
+  );
+  assert.deepEqual(
+    selected(
+      rows.map((item) => ({
+        ...item,
+        scoreCjk: item.scoreCjk === null ? null : item.scoreCjk * 1_000,
+      })),
+    ),
+    base,
+  );
+});
+
+test('rankCandidates keeps a clamp-scale BM25 candidate', () => {
+  const result = rankCandidates(
+    [
+      row({ id: 'strong', title: 'alpha', body: 'unique alpha body', scoreTrigram: -0.4361279 }),
+      row({ id: 'clamped', title: 'notes', body: 'fact notes', scoreTrigram: -0.0000064033 }),
+    ],
+    { lambda: 0.5, budgetChars: 10_000, limit: 10 },
+  );
+  assert.ok(
+    result.included.some((item) => item.id === 'clamped'),
+    `clamp-scale candidate omitted; included ${result.included.map((item) => item.id).join(', ') || '(none)'} omitted ${result.omitted.map((item) => `${item.id}:${item.reason}`).join(', ')}`,
+  );
+});
+
+test('a config with the legacy threshold key retrieves the same as one without', async () => {
+  const facts = fixtureFacts();
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
+      for (const fact of facts) {
+        insertSearchable(opened.db, { id: fact.id, repoId: 'repo_a', title: fact.id, body: fact.sentence });
+      }
+      const idsFor = () =>
+        facts.map((fact) =>
+          searchMemories(opened.db, { repoId: 'repo_a', paths, query: fact.query, limit: 50 }).map((row) => row.id),
+        );
+      const without = idsFor();
+      writeFileSync(paths.config, '[injection]\nthreshold = 0.99\n');
+      assert.deepEqual(idsFor(), without);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('buildPromptPack on the five-row receipt carries the three fact strings through the trigram index', async () => {
+  await withTempHome(async (home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 2000 });
+    try {
+      seedPairCorpus(opened.db);
+      opened.db
+        .prepare(
+          `INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, model,
+             started_at, status, turn_count, context_epoch)
+           VALUES ('s_now', 'repo_a', 'claude', 'native_s_now', 'c1', 'claude-opus-5[1m]', 1, 'active', 1, 0)`,
+        )
+        .run();
+      seedWorkBinding(opened.db, 's_now');
+      opened.db.prepare('UPDATE work_contexts SET root = ?').run('/nonexistent-repository-root');
+      const pack = await buildPromptPack(opened.db, {
+        agent: 'claude',
+        repoId: 'repo_a',
+        repoIdentityDisplay: '/tmp/oboete-a',
+        sessionId: 's_now',
+        conversationId: 'c1',
+        turnId: null,
+        epoch: 0,
+        model: 'claude-opus-5[1m]',
+        channelCap: CHANNEL_CAPS.claude,
+        contextFraction: 0.05,
+        channel: 'claude:UserPromptSubmit',
+        now: 1_700_000_000_000,
+        detect: () => false,
+        directives: [],
+        repoRoot: '/nonexistent-repository-root',
+        prompt: PAIR_RECALL_PROMPT,
+      });
+      assert.notEqual(pack, null, 'the prompt pack should have been built');
+      for (const fact of PAIR_FACTS) {
+        assert.ok(pack!.text.includes(fact), `pack missing ${fact}; text:\n${pack!.text}`);
+      }
+      const found = searchCandidates(opened.db, {
+        text: PAIR_RECALL_PROMPT,
+        scope: { where: "m.repo_id = ? AND m.deleted_at IS NULL AND m.type <> 'session_summary'", params: ['repo_a'] },
+      });
+      const factRow = found.rows.find((item) => item.id === 'm_fact');
+      assert.ok(factRow, `m_fact missing from candidates; ${found.rows.map((item) => item.id).join(', ') || '(none)'}`);
+      assert.notEqual(factRow!.scoreTrigram, null, 'm_fact arrived through the LIKE fallback, not the trigram index');
+      assert.equal(factRow!.viaLike, false);
+      const scores = opened.db
+        .prepare(
+          `SELECT score_bm25 FROM injection_items WHERE injection_id = ? AND decision IN ('planned', 'included')`,
+        )
+        .all(pack!.injectionId);
+      for (const score of scores) {
+        assert.equal(score.score_bm25, null, `new ledger row still wrote score_bm25=${String(score.score_bm25)}`);
+      }
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('why still explains a historical below_threshold ledger row', async () => {
+  await withTempHome(async (home) => {
+    const repo = join(home, 'repo');
+    mkdirSync(repo, { recursive: true });
+    const identity = resolveRepoIdentity(repo);
+    const opened = openDatabase({ path: oboetePaths(home).db, timeoutMs: 2000 });
+    try {
+      insertRepo(opened.db, identity.id, identity.normalizedIdentity);
+      insertSearchable(opened.db, {
+        id: 'm_old',
+        repoId: identity.id,
+        title: 'Historical note',
+        body: 'A note omitted by a former threshold.',
+      });
+      opened.db
+        .prepare(
+          `INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, model,
+             started_at, status, turn_count, context_epoch)
+           VALUES ('s_why', ?, 'claude', 'native_why', 's_why', 'claude-opus-5', 1, 'active', 1, 0)`,
+        )
+        .run(identity.id);
+      const injectionId = createInjection(opened.db, {
+        repoId: identity.id,
+        sessionId: 's_why',
+        conversationId: 's_why',
+        turnId: null,
+        kind: 'prompt',
+        channel: 'claude:UserPromptSubmit',
+        state: 'emitted',
+        epoch: 0,
+        packHash: 'hash-why-threshold',
+        charBudget: 1_000,
+        charsUsed: 400,
+        degradedReason: null,
+        createdAt: 1_800_000_000_000,
+      });
+      planItems(opened.db, { id: injectionId, conversationId: 's_why', epoch: 0 }, [
+        {
+          sourceKind: 'memory',
+          memoryId: 'm_old',
+          rawEventId: null,
+          decision: 'omitted',
+          reason: 'below_threshold',
+          rank: null,
+          stale: 0,
+        },
+      ]);
+    } finally {
+      opened.db.close();
+    }
+    let stdout = '';
+    let stderr = '';
+    const status = await runWhy(['s_why'], {
+      cwd: repo,
+      now: () => 1_800_000_000_000,
+      writeOut: (text) => {
+        stdout += text;
+      },
+      writeError: (text) => {
+        stderr += text;
+      },
+    });
+    assert.equal(status, 0, stderr || stdout);
+    assert.match(stdout, /the threshold used for that pack/);
+  });
+});
+
+test('doctor reports a set injection.threshold as ignored', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const config = configSchema.parse({ injection: { threshold: 0.4 } });
+    const item = workerItem(null, 1, false, paths, config);
+    assert.match(item.reason, /The deprecated injection\.threshold value 0\.4 is ignored/);
   });
 });
