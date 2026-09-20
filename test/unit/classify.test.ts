@@ -440,6 +440,35 @@ test('the separator two runs join on does not exempt the sentence they make (#29
   assert.equal(checkLanguage(inputWithHint('ja', events), assembled), 'mismatch');
 });
 
+test('words of the field\u2019s own end the chain, so the framing after them is still framing', () => {
+  // The field quotes, writes words of its own, then frames a second quote. The first quote must not
+  // make the second one part of a chain: nothing was tiled, and both quotes are honest.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'the first note says \u914d\u5e03\u8272\u306f\u7425\u73c0\u8272\u3067\u3042\u308b\u3002 exactly' },
+    { id: 'e2', kind: 'prompt', text: 'facts: keep the release value' },
+    { id: 'e3', kind: 'prompt', text: 'the second note says \u518d\u8a66\u884c\u306f\u4e09\u56de\u3067\u3042\u308b\u3002 exactly' },
+  ];
+  const framed = output(observation({
+    title: 'Record',
+    body: '\u914d\u5e03\u8272\u306f\u7425\u73c0\u8272\u3067\u3042\u308b\u3002 and then facts: \u518d\u8a66\u884c\u306f\u4e09\u56de\u3067\u3042\u308b\u3002',
+  }));
+  assert.equal(checkLanguage(inputWithHint('en', events), framed), 'ok');
+});
+
+test('an identifier quoted between two fragments does not make the chain framing', () => {
+  // Each junction on its own changes script, but the chain holds Japanese on both sides of the
+  // identifier: the sentence is still assembled out of three fields the request never wrote joined.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'one field holds \u65e5\u672c\u8a9e\u6587 here' },
+    { id: 'e2', kind: 'prompt', text: 'another names BRIDGE as the step' },
+    { id: 'e3', kind: 'prompt', text: 'and a third holds \u914d\u5e03\u7269\u8a2d\u5b9a today' },
+  ];
+  const chained = output(observation({
+    title: 'Record', body: '\u65e5\u672c\u8a9e\u6587BRIDGE\u914d\u5e03\u7269\u8a2d\u5b9a',
+  }));
+  assert.equal(checkLanguage(inputWithHint('en', events), chained), 'mismatch');
+});
+
 test('a run of punctuation between two quoted fragments does not break the tiling', () => {
   // The separator has no script of its own, so it must not read as the change of script that marks
   // framing: the two Japanese fragments on either side are still a sentence nobody wrote.
