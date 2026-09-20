@@ -7,9 +7,9 @@ only what the product writes or what this run itself started: `logs/observe.log`
 processes the harness spawned or that log names, each child's peak resident size as the kernel
 reports it through `/usr/bin/time -f %M`, the database and its WAL.
 
-Run on 2026-09-21 against `d635589f`, on both supported Node versions. The harness refuses to start
-with a modified tracked file and records the digest of the two files it runs - the launcher and the
-engine it imports - so the commit names what ran: both legs report `c43e809d227a3621`. An interactive session was
+Run on 2026-09-21 against `2f24c005`, on both supported Node versions. The harness refuses to start
+with a modified tracked file, builds the two files it runs - the launcher and the engine it imports
+- and records their digest, so the commit names what ran: both legs report `c43e809d227a3621`. An interactive session was
 running on the same machine; the load at the start of each run is in the table.
 
 ## What it measures
@@ -33,18 +33,18 @@ the cost of generating from it. SC-009 recall is 0/40 for the same reason and is
 
 | | Node 24.16.0 | Node 22.23.1 | Bound |
 |---|---|---|---|
-| peak `VmHWM`, any process of the run | 110,516 KiB (107.93 MiB) | 103,136 KiB (100.72 MiB) | < 150 MiB |
-| worker peak `VmHWM` (phase A, from the replay) | 110,316 KiB (107.73 MiB) | 103,136 KiB (100.72 MiB) | same bound |
-| replay peak `%M` (covers its 1,143 hooks) | 110,516 KiB (107.93 MiB) | 102,160 KiB (99.77 MiB) | same bound |
-| worst of the 240 phase B hooks (`%M`) | 109,816 KiB (107.24 MiB) | 96,508 KiB (94.25 MiB) | same bound |
-| worker peak `VmHWM` (phase B, all stages) | 102,512 KiB (100.11 MiB) | 95,300 KiB (93.07 MiB) | same bound |
-| worker peak `VmHWM` (during the hold itself) | 100,920 KiB (98.55 MiB) | 93,432 KiB (91.24 MiB) | reported |
-| growth per 1,000 events | 4,844,369 bytes | 4,824,883 bytes | recorded, not gated |
-| capture hooks (phase A) | p99 174.4 ms, 100.0% ≤ 300 ms (n=717) | p99 166.2 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
-| phase B hooks | n=240, p50 213 ms, max 298 ms, none over 1 s, 0 non-zero | n=240, p50 213 ms, max 294 ms, none over 1 s, 0 non-zero | every hook exits 0 |
-| WAL during the hold | 0 → peak 28,662,872 bytes → 0 after the stop | 0 → peak 28,930,672 bytes → 0 | grows under a held reader, recycles after |
+| peak `VmHWM`, any process of the run | 111,316 KiB (108.71 MiB) | 102,540 KiB (100.14 MiB) | < 150 MiB |
+| worker peak `VmHWM` (phase A, from the replay) | 111,316 KiB (108.71 MiB) | 102,540 KiB (100.14 MiB) | same bound |
+| replay peak `%M` (covers its 1,143 hooks) | 110,544 KiB (107.95 MiB) | 101,624 KiB (99.24 MiB) | same bound |
+| worst of the 240 phase B hooks (`%M`) | 109,100 KiB (106.54 MiB) | 96,428 KiB (94.17 MiB) | same bound |
+| worker peak `VmHWM` (phase B, all stages) | 105,848 KiB (103.37 MiB) | 95,520 KiB (93.28 MiB) | same bound |
+| worker peak `VmHWM` (during the hold itself) | 99,388 KiB (97.06 MiB) | 93,476 KiB (91.29 MiB) | reported |
+| growth per 1,000 events | 4,824,883 bytes | 4,820,986 bytes | recorded, not gated |
+| capture hooks (phase A) | p99 178.0 ms, 100.0% ≤ 300 ms (n=717) | p99 167.5 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
+| phase B hooks | n=240, p50 213 ms, max 290 ms, none over 1 s, 0 non-zero | n=240, p50 210 ms, max 295 ms, none over 1 s, 0 non-zero | every hook exits 0 |
+| WAL during the hold | 0 → peak 29,008,952 bytes → 0 after the stop | 0 → peak 28,518,672 bytes → 0 | grows under a held reader, recycles after |
 | spool files at any sample | 0 | 0 | 0 |
-| load average at start | 0.33 0.26 0.55 | 0.84 0.74 0.69 | — |
+| load average at start | 0.30 0.26 0.53 | 1.97 1.82 1.14 | — |
 
 Gated checks, both runs **pass**:
 
@@ -54,18 +54,18 @@ Gated checks, both runs **pass**:
 - `not-stuck` — `pending=0`, `liveBatches=0`, `endReason=stopped` and nothing else (the run throws
   when `observe --stop` fails, so an `idle_exit` end would mean the stop path never ran),
   `workerErrors=0`, no bad end reason, and no `worker-stop` sentinel left behind: a worker that
-  cannot remove it only logs that, and the next worker would stop on it. 1,119 sources waiting and
-  4 parked on each version, which is what `preset = "none"` produces - the check requires nothing
+  cannot remove it only logs that, and the next worker would stop on it. 1,118 sources waiting on
+  24.x and 1,119 on 22.x, with 4 parked on each, which is what `preset = "none"` produces - the check requires nothing
   to have been processed and something to be waiting, since with no summarizer neither could be
   otherwise. The spool count includes `spool/failed/`, so an entry recovery quarantined is a
   failure rather than an empty spool.
-- `wal-recycled` — the WAL grows from 0 under the held reader (peak 28,662,872 bytes on 24.x and
-  28,930,672 on 22.x) and is back to 0
+- `wal-recycled` — the WAL grows from 0 under the held reader (peak 29,008,952 bytes on 24.x and
+  28,518,672 on 22.x) and is back to 0
   after the product's own stop path runs `wal_checkpoint(TRUNCATE)`; the check passes when the final
-  size is at most a quarter of the peak. Seven `info batch` lines on each version were logged
+  size is at most a quarter of the peak. Seven `info batch` lines on 24.x and six on 22.x were logged
   while the reader was held, so the growth is a worker writing against the held snapshot rather than an idle file.
 - `rss-bound` — peak `VmHWM` under the 150 MiB bound on both versions, across every process of the
-  run - 110,516 KiB (107.93 MiB) on 24.x and 103,136 KiB (100.72 MiB) on 22.x: the resident worker
+  run - 111,316 KiB (108.71 MiB) on 24.x and 102,540 KiB (100.14 MiB) on 22.x: the resident worker
   from the samples, and each of the 245 children from the kernel's own figure at exit (the replay,
   240 hooks, three `doctor` runs and `observe --stop`). A child that leaves no reading fails the
   check; none did. So does a resident the worker log names from the first sample onwards that no
@@ -79,13 +79,13 @@ Gated checks, both runs **pass**:
 
 Reported, not gated:
 
-- injection p99 300.5 ms on 24.x with 98.7% ≤ 300 ms (n=378) and 296.3 ms with 99.5% on 22.x; the
-  worst group is grok/`UserPromptSubmit` at p99 329.0 ms (24.x) and 337.5 ms (22.x).
-- session start: ready max 217.6 ms (24.x) and 212.1 ms (22.x), n=1; pending max 229.7 ms and
-  215.4 ms (n=48), with 46 of 48 packs carrying `summary_pending`.
+- injection p99 308.1 ms on 24.x with 98.7% ≤ 300 ms (n=378) and 294.4 ms with 98.9% on 22.x; the
+  worst group is grok/`UserPromptSubmit` at p99 341.4 ms (24.x) and 329.3 ms (22.x).
+- session start: ready max 217.0 ms (24.x) and 211.3 ms (22.x), n=1; pending max 226.3 ms and
+  213.0 ms (n=48), with 46 of 48 packs carrying `summary_pending`.
 - SC-009 recall 0/40, by construction of `preset = "none"`.
-- no phase B hook on either version ran over a second in this pair of runs: the slowest was 298 ms
-  on 24.x and 294 ms on 22.x, and all 480 exited 0. Earlier runs of this same harness did produce
+- no phase B hook on either version ran over a second in this pair of runs: the slowest was 290 ms
+  on 24.x and 295 ms on 22.x, and all 480 exited 0. Earlier runs of this same harness did produce
   one to three hooks of around three seconds, so whether they appear at all varies between runs, the
   cause is not isolated, and hook cold start is tracked in #210.
 - the phase B hook durations carry the `/usr/bin/time` wrapper's own startup, because the harness
@@ -110,7 +110,7 @@ code it ran:
 ```sh
 mkdir -p /var/tmp/oboete-t042
 ~/.nvm/versions/node/v24.16.0/bin/node scripts/measure-resources.mjs \
-  --json-out /var/tmp/oboete-t042/v26-24.16.0.json > /var/tmp/oboete-t042/v26-24.16.0.md
+  --json-out /var/tmp/oboete-t042/v27-24.16.0.json > /var/tmp/oboete-t042/v27-24.16.0.md
 echo "exit=$?"
 ```
 
@@ -120,7 +120,7 @@ keeps its temporary home and prints the path.
 
 ## Receipts
 
-`/var/tmp/oboete-t042/v26-24.16.0.{md,json,observe.log}` and `v26-22.23.1.{md,json,observe.log}`. The
+`/var/tmp/oboete-t042/v27-24.16.0.{md,json,observe.log}` and `v27-22.23.1.{md,json,observe.log}`. The
 Markdown is the harness's own report; the JSON is the same data unrounded; `observe.log` is the
 worker's log for the run, which is where `endReason`, `workerErrors` and the bad-end set are read
 from.
