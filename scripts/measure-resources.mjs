@@ -432,15 +432,21 @@ async function waitHeldBatch(logPath, fromMs) {
   }
   throw new HarnessError('held reader never overlapped a worker batch');
 }
-// A doctor that printed its report and then had to be killed is not a reading of a healthy home,
-// even though its JSON parses. Its exit code is not checked: `doctor` reports a degraded item by
-// exiting non-zero, and `preset = "none"` makes generation degraded by construction.
-async function readDoctor(env, cwd) {
-  const run = await spawnWait(process.execPath, [BUNDLE, 'doctor', '--json'], { env, cwd, timeoutMs: 60_000 });
+// A doctor whose report parses is not by itself a reading of this home: it may have been killed
+// after printing, or the product may have refused the run after printing. `src/doctor.ts` returns 0
+// for a clean home and 1 for a degraded item - which `preset = "none"` guarantees, so 1 is normal
+// here - while 2 is its own refusal of the arguments and 3 is an integrity failure; `src/cli.ts`
+// also exits 3 on an uncaught error. Only 0 and 1 are readings.
+function doctorItems(run) {
   if (run.timedOut || run.signal !== null) {
     throw new HarnessError(`doctor --json was killed (${run.timedOut ? 'timeout' : run.signal})`);
   }
-  const items = parseJsonStdout(run.stdout)?.items ?? [];
+  if (run.status !== 0 && run.status !== 1) throw new HarnessError(`doctor --json exited ${run.status}`);
+  return parseJsonStdout(run.stdout)?.items ?? [];
+}
+async function readDoctor(env, cwd) {
+  const run = await spawnWait(process.execPath, [BUNDLE, 'doctor', '--json'], { env, cwd, timeoutMs: 60_000 });
+  const items = doctorItems(run);
   const generation = items.find((item) => item.item === 'generation');
   const worker = items.find((item) => item.item === 'worker');
   if (generation === undefined) throw new HarnessError('doctor --json missing generation item');
@@ -742,6 +748,13 @@ async function selfCheck() {
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 1_000 }] }).pass, true);
   assert.equal(checkRss({ phaseAHwmKb: 150 * 1024, phaseB: pid(100) }).pass, false, 'the bound is strict, as the evidence states it');
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), unsampledWorkers: [4242] }).pass, false, 'a resident no sample saw is an unmeasured process');
+  const doctorRun = (over) => ({ timedOut: false, signal: null, status: 0, stdout: '{"items":[{"item":"generation"}]}', ...over });
+  assert.equal(doctorItems(doctorRun()).length, 1);
+  assert.equal(doctorItems(doctorRun({ status: 1 })).length, 1, 'a degraded item is what preset none produces');
+  assert.throws(() => doctorItems(doctorRun({ status: 3 })), /doctor --json exited 3/);
+  assert.throws(() => doctorItems(doctorRun({ status: 2 })), /doctor --json exited 2/);
+  assert.throws(() => doctorItems(doctorRun({ timedOut: true, status: null })), /was killed \(timeout\)/);
+  assert.throws(() => doctorItems(doctorRun({ signal: 'SIGKILL', status: null })), /was killed \(SIGKILL\)/);
   assert.equal(parseRss('123456\n'), 123456);
   assert.equal(parseRss('Command terminated by signal 15\n99\n'), 99);
   assert.equal(parseRss(''), 0);

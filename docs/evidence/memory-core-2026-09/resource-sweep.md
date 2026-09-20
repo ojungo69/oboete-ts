@@ -54,7 +54,8 @@ Gated checks, both runs **pass**:
   `workerErrors=0`, no bad end reason, and no `worker-stop` sentinel left behind: a worker that
   cannot remove it only logs that, and the next worker would stop on it. 1,118 sources waiting on
   24.x and 1,119 on 22.x, with 4 parked on each, which is what `preset = "none"` produces.
-- `wal-recycled` — the WAL grows from 0 under the held reader (peak 28 MB on 24.x, 29 MB on 22.x) and is back to 0
+- `wal-recycled` — the WAL grows from 0 under the held reader (peak 28,881,232 bytes on 24.x and
+  28,382,712 on 22.x) and is back to 0
   after the product's own stop path runs `wal_checkpoint(TRUNCATE)`; the check passes when the final
   size is at most a quarter of the peak. Eight `info batch` lines on 24.x and seven on 22.x were logged
   while the reader was held, so the growth is a worker writing against the held snapshot rather than an idle file.
@@ -64,7 +65,11 @@ Gated checks, both runs **pass**:
   240 hooks, three `doctor` runs and `observe --stop`). A child that leaves no reading fails the
   check; none did. So does a resident the worker log names from the first sample onwards that no
   sample ever saw - a hook spawns its resident detached, so the hook's own `%M` does not cover it -
-  and on both versions that count was 0.
+  and on both versions that count was 0. What the resident's figure cannot carry is growth inside
+  the last interval of its life: `VmHWM` is a high-water mark, so every sample carries every peak
+  before it, but once the process is gone `/proc` is gone with it, and the worker does not record
+  its own peak when it ends. The gap is bounded by one sample interval, 250 ms; closing it properly
+  is #307.
 
 Reported, not gated:
 
