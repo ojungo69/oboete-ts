@@ -153,10 +153,15 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  *
  * Where one run ends and the next begins with nothing between them, the join is the observer's:
  * the request carries each piece but never that sentence, so a field tiled out of quoted fragments
- * would otherwise exempt itself whole. The whole run that opens each such junction stays in the
- * residual and is scored: keeping one character of it leaves nothing to score when that character
- * is punctuation, which `scriptAgrees` reads as `other`. A field that quotes twice with words of
- * its own between them has no junction, and neither has a field that is one quote.
+ * would otherwise exempt itself whole. When the field kept nothing of its own, the runs that open
+ * those junctions are what it is scored on — the whole run, because one character of it is nothing
+ * to score when that character is punctuation, which `scriptAgrees` reads as `other`.
+ *
+ * A field that kept words of its own is scored on those and the junctions are left out of it. The
+ * framing the prompt asks for ("Durable facts: <the fact>") can itself match a run of the request,
+ * which puts a junction in front of an honest quote; scoring that quote would fail the field the
+ * exemption exists for. A field that quotes twice with words of its own between them has no
+ * junction either, and neither has a field that is one quote.
  */
 function unquoted(text: string, corpus: QuotedCorpus): string {
   // The worker appends the omission marker itself, so its words are nobody's answer — unless they
@@ -171,6 +176,7 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   // one coincidence.
   if ([...subject].length > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
   let residual = '';
+  let junctions = '';
   let index = 0;
   let previousRunEnd = -1;
   while (index < subject.length) {
@@ -184,11 +190,11 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       index += character.length;
       continue;
     }
-    if (index === previousRunEnd) residual += subject.slice(index, index + length);
+    if (index === previousRunEnd) junctions += subject.slice(index, index + length);
     index += length;
     previousRunEnd = index;
   }
-  return residual;
+  return scriptRatios(residual).letters === 0 ? residual + junctions : residual;
 }
 
 /**

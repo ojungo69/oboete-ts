@@ -415,6 +415,29 @@ test('two supplementary characters are four code units and still a coincidence',
   assert.equal(checkLanguage(inputWithHint('en', events), shared), 'mismatch');
 });
 
+test('an honest quote keeps its exemption when the framing in front of it matches a run', () => {
+  // The prompt asks for framing around a declared fact, and the framing can match a run of the
+  // request on its own, which puts a junction in front of the quote. The field kept words of its
+  // own here, so those are what it is scored on and the quote stays exempt (FR-014).
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'facts: keep the release value exactly.' },
+    { id: 'e2', kind: 'prompt', text: '配布色は琥珀色である。' },
+  ];
+  const framed = output(observation({
+    title: 'Record', body: 'Durable facts: 配布色は琥珀色である。',
+  }));
+  assert.equal(checkLanguage(inputWithHint('en', events), framed), 'ok');
+});
+
+test('the scan advances by characters, so a run cannot start inside one', () => {
+  // Two supplementary characters can share their low half: advancing by one UTF-16 unit would leave
+  // the high half of `𠐀` in the residual, where `dominantScript` reads it as `other`, and let the
+  // run start on the low half the request also carries.
+  const events = [{ id: 'e1', kind: 'prompt', text: 'the record keeps 𠀀日本語文 verbatim.' }];
+  const split = output(observation({ title: 'Record', body: '𠐀日本語文' }));
+  assert.equal(checkLanguage(inputWithHint('en', events), split), 'mismatch');
+});
+
 test('a short coincidence does not exempt a field', () => {
   // '色' appears inside the quoted fact, but one shared character is not a quotation.
   const fact = '配布色は琥珀。';

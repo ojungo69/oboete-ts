@@ -213,6 +213,15 @@ test('trimObservation keeps the indentation of the first line that has content',
   assert.ok(trimmed.body.startsWith('    x'), JSON.stringify(trimmed.body.slice(0, 12)));
 });
 
+test('trimObservation keeps content the indentation would otherwise push out of the budget', () => {
+  // Indentation is content, but indentation long enough to fill the cut by itself would return an
+  // empty body and lose everything after it. The boundary is the last character the cut keeps.
+  for (const indent of [1_982, 1_983, 1_984]) {
+    const body = `\n${' '.repeat(indent)}${'x'.repeat(2_500)}`;
+    assert.ok(trimObservation(observation({ body })).body.includes('x'), `indent ${indent}`);
+  }
+});
+
 test('trimObservation returns nothing for a body that is blank all the way through', () => {
   // The alternative is a marker that omits nothing, which `classify.ts` then scores as the
   // provider's own English and sends a whole valid batch to the fallback.
