@@ -193,6 +193,18 @@ test('trimObservation keeps as much of a single long line as the budget allows',
   assert.ok(trimmed.body.startsWith('z'.repeat(1_983)));
 });
 
+test('trimObservation keeps content when the body opens with blank lines', () => {
+  // Cutting at the first line boundary would leave `\n... (+1 omitted)` — the marker as the whole
+  // body, with every character of content dropped. `classify.ts` also reads a field that is only
+  // the marker as the provider's own words, which only holds while the worker never writes one.
+  for (const prefix of ['\n', '  \n', '\n\n', ' \t \n']) {
+    const trimmed = trimObservation(observation({ body: `${prefix}${'\u3042'.repeat(2_500)}` }));
+    assert.match(trimmed.body, /\n\.\.\. \(\+\d+ omitted\)$/, prefix);
+    assert.ok(trimmed.body.includes('\u3042'), `content survives ${JSON.stringify(prefix)}`);
+    assert.ok(trimmed.body.length <= 2000, prefix);
+  }
+});
+
 test('validateObserverOutput trims an oversized body and title instead of refusing the batch', () => {
   const result = validateObserverOutput(
     output([observation({ title: 't'.repeat(200), body: 'b'.repeat(2_100) })]),

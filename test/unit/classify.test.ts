@@ -17,6 +17,7 @@ import {
   eventParts,
   eventText,
   observerInputSchema,
+  trimObservation,
   type ObserverInput,
 } from '../../src/observer/contract.js';
 import {
@@ -323,6 +324,15 @@ test('a field that is only the omission marker is the provider\'s own words', ()
   const events = [{ id: 'e1', kind: 'prompt', text: '配布の設定を確認しました。' }];
   const marker = output(observation({ title: '配布の記録', body: '... (+1 omitted)' }));
   assert.equal(checkLanguage(inputWithHint('ja', events), marker), 'mismatch');
+  // What the worker does write, for every blank-prefixed body `trimBody` is given, still passes:
+  // it keeps content in front of the marker, so the field is scored on its Japanese.
+  for (const prefix of ['\n', '  \n', '\n\n']) {
+    const trimmedBody = trimObservation(observation({ title: '配布の記録',
+      body: `${prefix}${'配布の設定を確認しました。'.repeat(200)}` })).body;
+    assert.notEqual(trimmedBody.replace(/\n?\.\.\. \(\+\d+ omitted\)$/u, '').trim(), '', prefix);
+    assert.equal(checkLanguage(inputWithHint('ja', events),
+      output(observation({ title: '配布の記録', body: trimmedBody }))), 'ok', prefix);
+  }
   // The shape the marker exists for is unchanged: content of the request's own language, trimmed.
   const trimmed = output(observation({ title: '配布の記録',
     body: '配布の設定を確認しました。\n... (+1 omitted)' }));

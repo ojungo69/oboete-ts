@@ -404,8 +404,14 @@ function trimBody(body: string): string {
   if (body.length <= MAX_BODY) return body;
   const lines = body.split('\n');
   for (let keep = lines.length - 1; keep >= 1; keep -= 1) {
+    const kept = lines.slice(0, keep).join('\n');
+    // A prefix of blank lines is not content. Keeping it would return the marker as the whole body,
+    // which is the loss the character cut below exists to avoid, and it would make a field that is
+    // only the marker something the worker writes — `classify.ts` reads that field as the
+    // provider's own words, and rightly, because nothing else produces one.
+    if (kept.trim() === '') break;
     const suffix = `... (+${lines.length - keep} omitted)`;
-    const next = `${lines.slice(0, keep).join('\n')}\n${suffix}`;
+    const next = `${kept}\n${suffix}`;
     if (next.length <= MAX_BODY) return next;
   }
   // Not even the first line fits, so it is cut by characters: a body of one long line must keep
