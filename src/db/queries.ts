@@ -2,7 +2,7 @@ import type { DatabaseSync, SQLInputValue, SQLOutputValue } from 'node:sqlite';
 
 import type { Destination, Sensitivity } from '../privacy/egress.js';
 import { searchCandidates } from '../retrieval/query.js';
-import { normalizeBm25, rrfFuse } from '../retrieval/rank.js';
+import { rrfFuse } from '../retrieval/rank.js';
 import { strictest } from '../privacy/classify.js';
 import { sha256Json } from '../hash.js';
 import { prepared } from './statements.js';
@@ -509,7 +509,7 @@ export function nearbyCandidates(
       AND NOT EXISTS (SELECT 1 FROM memory_visibility personal WHERE personal.memory_id = m.id AND personal.audience = 'personal')`, params: visibility.params },
     limit,
   });
-  const ranked = rrfFuse(normalizeBm25(normalizeBm25(found.rows, 'scoreTrigram'), 'scoreCjk'))
+  const ranked = rrfFuse(found.rows)
     .sort((left, right) => (right.score_rrf ?? 0) - (left.score_rrf ?? 0) || (left.id < right.id ? -1 : 1))
     .slice(0, limit);
   if (ranked.length === 0) return [];

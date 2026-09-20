@@ -1,7 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
 
-import { loadConfig } from './config.js';
 import {
   getMemory,
   memoryScope,
@@ -163,7 +162,7 @@ export function renderSearch(rows: SearchRow[]): string {
     .map(
       (row) =>
         `- Memory ${row.id} is a ${row.type} titled ${JSON.stringify(row.title || '(untitled)')}.\n` +
-        `  Its relevance score is ${row.score.toFixed(6)}. It matched because of ${row.reasons
+        `  Its ordering score is ${row.score.toFixed(6)}. It matched because of ${row.reasons
           .map(reasonText)
           .join(' and ')}.\n` +
         `  Its body is ${JSON.stringify(row.body)}.`,
@@ -179,7 +178,6 @@ export function searchMemories(
   const scope = memoryScope(db, { repoId: input.repoId, destination: 'injection', workId: input.workId, history: input.history });
   const found = searchCandidates(db, { text: input.query, scope });
   const ranked = rankCandidates(found.rows, {
-    threshold: loadConfig(input.paths).injection.threshold,
     lambda: 0.5,
     limit: input.limit,
   });
@@ -194,7 +192,7 @@ export function searchMemories(
         body: row.body,
         sensitivity: memory.sensitivity,
         created_at: memory.created_at,
-        score: row.score_bm25,
+        score: row.score_rrf,
         reasons: searchReasons(row),
       },
     ];

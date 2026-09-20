@@ -71,9 +71,9 @@ for every ordered pair of the four agents.
    coming from oboete. On Grok Build the same pack arrives with the first tool call of the first
    turn and is labelled as deferred (FR-045).
 2. **Given** memories exist for R, **When** the developer submits a prompt that relates to some of
-   them, **Then** the prompt is enriched with the memories that pass the relevance threshold, up
-   to a cap proportional to that agent's documented context limit, and never with a memory that was
-   already injected earlier in the same session since the last context compaction.
+   them, **Then** the prompt is enriched with the memories the lexical index matches, ordered by
+   relevance, up to a cap proportional to that agent's documented context limit, and never with a
+   memory that was already injected earlier in the same session since the last context compaction.
 3. **Given** a session in agent A on R has just ended and its summary is still being produced,
    **When** the developer starts a session in agent B on R within seconds, **Then** session start
    waits at most 1 second for the summary and, if it is still not ready, injects the most recent
@@ -396,9 +396,11 @@ Retrieval and injection
   still pending it MUST wait at most 1 second and then inject the latest raw activity labelled
   "summary pending". A context compaction opens a new context epoch of the conversation.
 - **FR-025**: At prompt submit the system MUST retrieve memories of the same repository by lexical
-  relevance to the prompt, including Japanese and other CJK text, and inject those above a
-  relevance threshold up to a cap proportional to the agent's documented context limit; the
-  amount MUST NOT be a fixed token count.
+  relevance to the prompt, including Japanese and other CJK text, and inject the matches in
+  relevance order up to a cap proportional to the agent's documented context limit; the amount MUST
+  NOT be a fixed token count. Admission is the index's own match, not a score cut: a relevance
+  threshold over one result set is meaningless on a small corpus (#275), so what an index matches is
+  what may be injected, and only redundancy and the budget remove it.
 - **FR-026**: The system MUST NOT inject the same memory twice within one context epoch of an
   agent conversation, counting resumed continuations of that conversation as the same
   conversation; a context compaction opens a new epoch, so the re-injection FR-024 requires after

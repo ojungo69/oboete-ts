@@ -39,9 +39,14 @@ errors; protocol errors (`-32602`) are reserved for invalid arguments.
 
 ```json
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"sqlite busy timeout","limit":5}}}
-← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 memories\n- [decision] ...\n- [discovery] ..."}],"structuredContent":{"memories":[{"id":"m_...","type":"decision","title":"...","body":"...","sensitivity":"eligible","created_at":0,"citations":[],"score":0.83,"stale":false}],"degraded":null}}}
+← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"2 memories\n- [decision] ...\n- [discovery] ..."}],"structuredContent":{"memories":[{"id":"m_...","type":"decision","title":"...","body":"...","sensitivity":"eligible","created_at":0,"citations":[],"score":0.016393442622950821,"stale":false}],"degraded":null}}}
 ← {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"not found"}],"isError":true}}
 ```
+
+`score` is the ordering score the ranker produced — reciprocal rank fusion over the two indexes
+(`1/(60 + rank)` per index it matched, #275), not a normalized relevance in 0..1 — the example
+above matches only the trigram index, so its best possible value is `1/61`. Compare it
+within one response; it says nothing across responses.
 
 `ping` returns `{}`. Unknown tool names return `-32602`.
 

@@ -304,7 +304,30 @@ function workerSettings(config: OboeteConfig | null, paths: OboetePaths): string
   return `Resident mode is ${config.worker.resident ? 'enabled' : 'disabled'}, and the idle-exit timeout is ${config.worker.idle_exit_ms} milliseconds. ${stopState}`;
 }
 
+function withIgnoredThreshold(item: DoctorItem, config: OboeteConfig | null): DoctorItem {
+  const value = config?.injection.threshold;
+  if (value === undefined) return item;
+  const reason = `${item.reason} The deprecated injection.threshold value ${value} is ignored.`;
+  if (item.status !== 'healthy') return { ...item, reason };
+  return warning(
+    item.item,
+    reason,
+    'Retrieval ranking no longer uses an admission threshold.',
+    'Remove injection.threshold from the configuration file; it has no effect.',
+  );
+}
+
 export function workerItem(
+  db: DatabaseSync | null,
+  now: number,
+  integrityFailed: boolean,
+  paths: OboetePaths,
+  config: OboeteConfig | null,
+): DoctorItem {
+  return withIgnoredThreshold(workerLeaseItem(db, now, integrityFailed, paths, config), config);
+}
+
+function workerLeaseItem(
   db: DatabaseSync | null,
   now: number,
   integrityFailed: boolean,
@@ -325,10 +348,7 @@ export function workerItem(
   try {
     const row = db.prepare('SELECT owner_token, pid, heartbeat_at FROM worker_lease WHERE id = 1').get();
     if (row?.owner_token == null) {
-      return healthy(
-        'worker',
-        `No worker is running; a hook starts one when work is queued. ${settings}`,
-      );
+      return healthy('worker', `No worker is running; a hook starts one when work is queued. ${settings}`);
     }
     const processId = asNumber(row.pid) ?? 0;
     if (stale(row.heartbeat_at, now)) {
@@ -344,10 +364,7 @@ export function workerItem(
     }
     const heartbeat = asNumber(row.heartbeat_at) ?? now;
     const seconds = Math.max(0, Math.round((now - heartbeat) / 1000));
-    return healthy(
-      'worker',
-      `The worker process ${processId} is alive (heartbeat ${seconds} seconds ago). ${settings}`,
-    );
+    return healthy('worker', `The worker process ${processId} is alive (heartbeat ${seconds} seconds ago). ${settings}`);
   } catch (error) {
     return degraded(
       'worker',

@@ -437,7 +437,7 @@ test('CLI sharing decisions and personal reads preserve the public projection sh
     stdout = '';
     assert.equal(await runSearch(['Japanese'], runtime), 0);
     assert.match(stdout, /Reply in Japanese/);
-    assert.match(stdout, /relevance score/);
+    assert.match(stdout, /ordering score/);
   });
 });
 

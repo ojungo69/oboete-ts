@@ -59,13 +59,16 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   first five), pinned in `test/unit/retrieval.test.ts`; the MMR depth observation is #272. The open miss is the
   small-corpus threshold drop #275, reproduced from the `2026-09-17T15-05-08-894Z` dogfood run (JST
   2026-09-18) and carried as a skipped
-  five-row artifact in the same file. Acceptance: #275 fixed; that artifact un-skipped and passing; the
-  fixture pins and the threshold mutation still green; plus three pins the artifact alone does not give:
-  a small-corpus false-positive case (an unrelated memory in a five-row corpus stays omitted), the same
-  five rows through `buildPromptPack` (the pack path is where the dogfood run dropped the row, and it
-  adds delivery filtering, retirement and the budget cut on top of the shared ranker), and evidence that
-  the rescued row arrives through the trigram index rather than the LIKE fallback, which `applyThreshold`
-  admits without comparing it to the threshold.
+  five-row artifact in the same file. Acceptance: #275 fixed by retiring the admission threshold
+  (`.specify/bugs/small-corpus-threshold-drop/assessment.md`, 2026-09-20 decision, measured against two
+  replacement gates); that artifact un-skipped and passing; the fixture pins still green; plus the pins the
+  artifact alone does not give: a small-corpus false-positive case (an unrelated memory in a five-row corpus
+  stays omitted), the same five rows through `buildPromptPack` (the pack path is where the dogfood run
+  dropped the row, and it adds delivery filtering, retirement and the budget cut on top of the shared
+  ranker), evidence that the rescued row arrives through the trigram index rather than the LIKE fallback,
+  and — replacing the retired `threshold = 0.99` mutation, which guarded the mechanism being removed — a
+  mutation that reintroduces magnitude-based exclusion, plus a pin that a config carrying the legacy
+  `threshold` key retrieves exactly as one without it.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 
 ## Phase 6: US4 — Share at the correct scope (P1)
