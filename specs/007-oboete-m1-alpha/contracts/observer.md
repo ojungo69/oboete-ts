@@ -138,9 +138,13 @@ residual against the strings the request carries: each field of each event (a pa
 the text its canonical JSON stands for), each nearby memory's title and body, and the provided
 checkpoint's title and body, each kept as its own string so that a quote cannot straddle a seam the
 request never wrote. A field the request carries whole is a quote, down to two characters. Otherwise
-every run of at least four characters that the request carries is removed, except that where one
-removed run ends and the next begins with nothing between them, one character of the join stays: the
-join is the observer's, so a sentence tiled out of quoted fragments is still scored. The omission
+every run of at least four characters that the request carries is removed, except where removed
+runs meet: the join is the observer's, so a sentence tiled out of quoted fragments is still scored.
+A run is kept whole when the chain of runs it belongs to has already held its script, which is what
+a tiling looks like; a run whose script is new to the chain is the framing the prompt asks for
+meeting the quote it frames, and stays removed. Only words of the field's own end a chain — a
+separator the field inserts and a quoted run of punctuation both carry no script, and neither ends
+a chain nor joins one. The omission
 marker the worker appends when it trims a body is removed before scoring, being nobody's answer.
 What remains has to agree. That covers a quote inside the framing the prompt asks for, a body
 trimmed with an omission marker, a short exact value, and a title reused from the memory an `update`
