@@ -1,4 +1,4 @@
-// Ranking over lexical candidates (research.md R5): normalized BM25, RRF, MMR, budget cut.
+// Ranking over lexical candidates (research.md R5): RRF, MMR, budget cut.
 
 export type RankRow = {
   id: string;
@@ -9,72 +9,19 @@ export type RankRow = {
   scoreTrigram: number | null;
   scoreCjk: number | null;
   viaLike: boolean;
-  normTrigram?: number;
-  normCjk?: number;
-  score_bm25?: number;
   score_rrf?: number;
   score_mmr?: number;
 };
 
-export type OmitReason = 'below_threshold' | 'mmr_redundant' | 'budget';
+export type OmitReason = 'mmr_redundant' | 'budget';
 
 export type OmittedItem = { id: string; reason: OmitReason };
 
-const DEFAULT_THRESHOLD = 0.3;
 const DEFAULT_LAMBDA = 0.5;
 const DEFAULT_RRF_K = 60;
 
 function isLikeOnly(row: RankRow): boolean {
   return row.viaLike && row.scoreTrigram === null && row.scoreCjk === null;
-}
-
-function ratio(score: number | null, best: number): number {
-  if (score === null || best === 0) return 0;
-  return score / best;
-}
-
-export function normalizeBm25<K extends 'scoreTrigram' | 'scoreCjk'>(
-  rows: readonly RankRow[],
-  key: K,
-): RankRow[] {
-  let best = 0;
-  let seen = false;
-  for (const row of rows) {
-    const score = row[key];
-    if (score === null) continue;
-    if (!seen || score < best) {
-      best = score;
-      seen = true;
-    }
-  }
-  return rows.map((row) =>
-    key === 'scoreTrigram'
-      ? { ...row, normTrigram: seen ? ratio(row.scoreTrigram, best) : 0 }
-      : { ...row, normCjk: seen ? ratio(row.scoreCjk, best) : 0 },
-  );
-}
-
-function bestNorm(row: RankRow): number {
-  return Math.max(row.normTrigram ?? 0, row.normCjk ?? 0);
-}
-
-export function applyThreshold(
-  rows: readonly RankRow[],
-  threshold = DEFAULT_THRESHOLD,
-): { kept: RankRow[]; dropped: RankRow[] } {
-  const scored: RankRow[] = [];
-  const like: RankRow[] = [];
-  const dropped: RankRow[] = [];
-  for (const row of rows) {
-    if (isLikeOnly(row)) {
-      like.push({ ...row, score_bm25: 0 });
-      continue;
-    }
-    const score = bestNorm(row);
-    if (score >= threshold) scored.push({ ...row, score_bm25: score });
-    else dropped.push(row);
-  }
-  return { kept: [...scored, ...like], dropped };
 }
 
 function compareId(a: string, b: string): number {
@@ -83,15 +30,14 @@ function compareId(a: string, b: string): number {
   return 0;
 }
 
-function ranksFor(
-  rows: readonly RankRow[],
-  normKey: 'normTrigram' | 'normCjk',
-  rawKey: 'scoreTrigram' | 'scoreCjk',
-): Map<string, number> {
+function ranksFor(rows: readonly RankRow[], rawKey: 'scoreTrigram' | 'scoreCjk'): Map<string, number> {
   const list = rows
     .filter((row) => !isLikeOnly(row) && row[rawKey] !== null)
     .sort((a, b) => {
-      const delta = (b[normKey] ?? 0) - (a[normKey] ?? 0);
+      const left = a[rawKey];
+      const right = b[rawKey];
+      if (left === null || right === null) return 0;
+      const delta = left - right;
       return delta !== 0 ? delta : compareId(a.id, b.id);
     });
   const ranks = new Map<string, number>();
@@ -100,8 +46,8 @@ function ranksFor(
 }
 
 export function rrfFuse(rows: readonly RankRow[], k = DEFAULT_RRF_K): RankRow[] {
-  const trigramRanks = ranksFor(rows, 'normTrigram', 'scoreTrigram');
-  const cjkRanks = ranksFor(rows, 'normCjk', 'scoreCjk');
+  const trigramRanks = ranksFor(rows, 'scoreTrigram');
+  const cjkRanks = ranksFor(rows, 'scoreCjk');
   return rows.map((row) => {
     if (isLikeOnly(row)) return { ...row, score_rrf: 0 };
     let score = 0;
@@ -274,14 +220,12 @@ export function cutToBudget(
 }
 
 export type RankOptions = {
-  threshold?: number;
   lambda?: number;
   budgetChars?: number;
   limit?: number;
 };
 
 export type RankedCandidate = RankRow & {
-  score_bm25: number;
   score_rrf: number;
   score_mmr: number;
 };
@@ -290,11 +234,8 @@ export function rankCandidates(
   candidates: readonly RankRow[],
   options: RankOptions = {},
 ): { included: RankedCandidate[]; omitted: OmittedItem[] } {
-  const withTrigram = normalizeBm25(candidates, 'scoreTrigram');
-  const withBoth = normalizeBm25(withTrigram, 'scoreCjk');
-  const { kept, dropped } = applyThreshold(withBoth, options.threshold);
-  const omitted: OmittedItem[] = dropped.map((row) => ({ id: row.id, reason: 'below_threshold' }));
-  const fused = rrfFuse(kept);
+  const omitted: OmittedItem[] = [];
+  const fused = rrfFuse(candidates);
   const { selected, rejected } = mmrSelect(fused, {
     lambda: options.lambda,
     limit: options.limit,
@@ -308,7 +249,6 @@ export function rankCandidates(
   return {
     included: included.map((row) => ({
       ...row,
-      score_bm25: row.score_bm25 ?? bestNorm(row),
       score_rrf: row.score_rrf ?? 0,
       score_mmr: row.score_mmr ?? 0,
     })),

@@ -92,7 +92,7 @@ test('loadConfig returns the defaults when there is no config file', async () =>
   await withTempHome((home) => {
     assert.deepEqual(loadConfig(oboetePaths(home)), {
       observer: { preset: 'workers-ai', agent_cli: 'claude', cost_policy: ['free-tier', 'local'], fallback: [] },
-      injection: { context_fraction: 0.05, threshold: 0.3 },
+      injection: { context_fraction: 0.05 },
       privacy: { secret_paths: [] },
       consent: {},
       worker: { resident: true, idle_exit_ms: 900_000 },

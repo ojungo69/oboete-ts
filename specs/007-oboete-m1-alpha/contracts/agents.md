@@ -151,8 +151,10 @@ confirming it. The epoch key is the native per-compaction value where the R13 pr
 Claude Code and Codex (A16 default: byte-identical same-turn compactions collapse)), which gives FR-024's "not again on resume" and its
 re-injection after compaction on every agent; session start
 = latest session summary + pinned memories, bounded to the channel cap, pinned trimmed in pin
-order; prompt submit = memories above the threshold up to a character
+order; prompt submit = the memories an index matches, in relevance order, up to a character
 budget = min(channel cap, `context_fraction` × context window), `context_fraction` default 0.05.
+Admission is the match itself, not a score cut (#275); only redundancy and the budget remove a
+matched memory.
 The context window is the documented window of the reported `model` from
 `docs/research/context-windows.md` (R12, maintained under R13); when the model is unknown or
 absent, the budget uses the smallest verified window for that agent and the pack carries

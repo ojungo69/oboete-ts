@@ -21,7 +21,7 @@ import { resolveRepoIdentity } from './repo-identity.js';
 import { SOURCE_METADATA_COLUMNS, SUMMARIZABLE_ROW_SQL, type RawEventRow } from './worker/batches.js';
 
 const ITEM_SENTENCES: Record<ItemReason, string> = {
-  below_threshold: 'Its relevance score was below the threshold.',
+  below_threshold: 'Its relevance score was below the threshold used for that pack.',
   budget: 'The character budget was already used by higher-ranked notes.',
   duplicate_in_conversation: 'It was already handed over earlier in this conversation.',
   stale_path: 'It cites a file that no longer exists at HEAD.',

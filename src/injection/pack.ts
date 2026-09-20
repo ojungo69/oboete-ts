@@ -78,7 +78,7 @@ export type PackChannelInput = {
 
 export type SessionStartInput = PackChannelInput;
 
-export type PromptPackInput = PackChannelInput & { prompt: string; threshold?: number;
+export type PromptPackInput = PackChannelInput & { prompt: string;
   /** Memory IDs in the earlier pack of this same response, still awaiting delivery. */
   excludeMemoryIds?: readonly string[] };
 
@@ -631,7 +631,6 @@ export async function buildPromptPack(
   });
 
   const ranked = rankCandidates(candidates, {
-    threshold: input.threshold,
     lambda: 0.5,
     budgetChars: budget.chars,
   });
@@ -649,7 +648,6 @@ export async function buildPromptPack(
       label: 'related',
       reason: null,
       rank: index + 1,
-      scoreBm25: row.score_bm25,
       scoreRrf: row.score_rrf,
       scoreMmr: row.score_mmr,
     }))],

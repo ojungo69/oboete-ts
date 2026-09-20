@@ -15,9 +15,11 @@ import {
 import { assertLease } from '../worker/lease.js';
 import {
   MAX_BODY,
+  TRIM_MARKER,
   DISPLAY_PATH_TAIL,
   MAX_SOURCE_EVENT_IDS,
   MAX_TITLE,
+  eventParts,
   type ObserverInput,
   type ObserverOutput,
 } from './contract.js';
@@ -68,20 +70,183 @@ export function dominantScript(text: string): 'ja' | 'en' | 'other' {
 /**
  * FR-014: the observer answers in the language of the content. The caller retries once on
  * `mismatch` and routes the batch to the fallback with `language_mismatch` on the second.
+ *
+ * A field whose own script disagrees with the hint is scored on what the observer *wrote*, not on
+ * what it quoted. The prompt tells it to carry a declared exact fact character for character, so an
+ * English session recording one Japanese fact must not lose the whole batch for it — and the same
+ * field usually carries framing around the quote ("Durable fact: <the fact>"), which a whole-field
+ * comparison would still call a mismatch. Removing every run the request already carries and scoring
+ * the residual covers the framed shape, a title trimmed to its limit, a body trimmed with an
+ * omission marker, and a title reused from a nearby memory, under one rule.
+ *
+ * A field whose own script *agrees* is accepted whole and its residual is never scored, as it was
+ * before the exemption existed, so a long quotation in the hint's language carries prose in another
+ * language past the gate. That is #295, which carries the measurement a tightening needs.
  */
 export function checkLanguage(input: ObserverInput, output: ObserverOutput): 'ok' | 'mismatch' {
   // Without a dominant script in the input there is nothing to compare the answer against.
   if (input.language_hint === 'other') return 'ok';
   const fields = output.observations.flatMap((observation) => [observation.title, observation.body]);
-  if (output.checkpoint.decision === 'replace') fields.push(output.checkpoint.purpose,
-    ...output.checkpoint.constraints, ...output.checkpoint.decisions, ...output.checkpoint.outstanding);
+  // The checkpoint's own purpose is excluded from the quoting exemption below: `checkpointText`
+  // picks all four section headings from it, so a purpose that is only a foreign-language quote
+  // renders the whole checkpoint in the wrong language.
+  if (output.checkpoint.decision === 'replace') fields.push(...output.checkpoint.constraints,
+    ...output.checkpoint.decisions, ...output.checkpoint.outstanding);
+  let quoted: QuotedCorpus | null = null;
   for (const text of fields) {
-      const script = dominantScript(text);
-      // A field of paths or numbers says nothing about the language it was written in.
-      if (script === 'other') continue;
-      if (script !== input.language_hint) return 'mismatch';
+    if (scriptAgrees(text, input.language_hint)) continue;
+    quoted ??= quotedCorpus(input);
+    if (scriptAgrees(unquoted(text, quoted), input.language_hint)) continue;
+    return 'mismatch';
   }
+  if (output.checkpoint.decision === 'replace'
+    && !scriptAgrees(output.checkpoint.purpose, input.language_hint)) return 'mismatch';
   return 'ok';
+}
+
+/** A field of paths or numbers says nothing about the language it was written in. */
+function scriptAgrees(text: string, hint: 'ja' | 'en'): boolean {
+  const script = dominantScript(text);
+  return script === 'other' || script === hint;
+}
+
+/** The shortest run of the request a field may reuse without being read as the writer's own words. */
+const MIN_QUOTED_RUN = 4;
+
+
+type QuotedCorpus = { texts: string[]; grams: Set<string> };
+
+/**
+ * The strings this request carries, which is what an observation may quote. The provided checkpoint
+ * counts (the observer is told to preserve its still-applicable items, and a later batch of the same
+ * session need not carry the events they were written from), and so do the nearby memories the
+ * prompt asks it to classify against: the honest title of an `update` is the target's own.
+ *
+ * Each field stays its own string, down to the six an event holds: joining them would let a quote
+ * straddle a seam the request never wrote. `eventParts` is also where a paged fragment is decoded
+ * from its canonical JSON, and it is the only place anything is decoded.
+ *
+ * Everything is normalized with `normalizeForIdentity`, and so is the subject, because a comparison
+ * that disagrees about case or run-length whitespace answers a question nobody asked. That
+ * lowercases, which loosens the English-in-Japanese direction slightly; the containment test below
+ * is what makes it worth it, since it needs both sides in one form to mean anything.
+ */
+function quotedCorpus(input: ObserverInput): QuotedCorpus {
+  const texts = [
+    ...input.events.flatMap(eventParts),
+    ...input.nearby.flatMap((memory) => [memory.title, memory.body]),
+    ...(input.checkpoint_context.state === 'provided'
+      ? [input.checkpoint_context.title, input.checkpoint_context.body] : []),
+  ].map(normalizeForIdentity).filter((part) => part.length > 0);
+  const grams = new Set<string>();
+  for (const text of texts) {
+    for (let index = 0; index + MIN_QUOTED_RUN <= text.length; index += 1) {
+      grams.add(text.slice(index, index + MIN_QUOTED_RUN));
+    }
+  }
+  return { texts, grams };
+}
+
+/**
+ * `text` with every run of at least `MIN_QUOTED_RUN` characters that the request already carries
+ * removed. Shorter coincidences stay: a single shared character must not exempt a one-word title.
+ *
+ * Where one run ends and the next begins with nothing between them, the join is the observer's:
+ * the request carries each piece but never that sentence. Two such runs in the same script are a
+ * sentence tiled out of the request, and the second one is scored, so a field tiled out of quoted
+ * fragments cannot exempt itself whole.
+ *
+ * A junction whose script is new is the other shape: the framing the prompt asks for ("Durable
+ * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
+ * honest quote in another script. Scoring that quote would fail the field the exemption exists for,
+ * so that junction is left alone.
+ *
+ * "New" is measured against every script the chain of runs has already held, not only the run
+ * before, so an identifier quoted between two fragments of one script does not buy them the framing
+ * exemption. Nothing without a script breaks the chain — neither a quoted run of punctuation nor a
+ * separator the field inserted itself — and words of the field's own do, which is why a field that
+ * quotes twice with prose between the quotes has no junction at all. Neither has a field that is
+ * one quote.
+ */
+function unquoted(text: string, corpus: QuotedCorpus): string {
+  // The worker appends the omission marker itself, so its words are nobody's answer — unless they
+  // are the whole field, which the worker never writes: `trimBody` leaves a body under `MAX_BODY`
+  // alone, so a field that is only the marker came from the provider and is scored like any other.
+  const trimmed = text.replace(TRIM_MARKER, '');
+  const subject = normalizeForIdentity(trimmed.trim() === '' ? text : trimmed);
+  // A field the request carries whole is a quote even when it is shorter than a run: `琥珀色` is a
+  // fact somebody asked to keep verbatim, not a coincidence. One character is still a coincidence —
+  // every CJK character of a Japanese request would exempt a title made of it. Counted in code
+  // points, because a supplementary-plane character such as `𠮷` is two UTF-16 units and
+  // one coincidence.
+  if (characterCount(subject) > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
+  let residual = '';
+  let index = 0;
+  let sinceRun = '';
+  const chain = new Set<'ja' | 'en'>();
+  while (index < subject.length) {
+    const length = quotedRun(subject, index, corpus);
+    if (length === 0) {
+      // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+      // reads a lone surrogate as `other`, which agrees with every hint. Advancing by the character
+      // also keeps every later run start on a boundary.
+      const character = String.fromCodePoint(subject.codePointAt(index) ?? 0);
+      residual += character;
+      sinceRun += character;
+      index += character.length;
+      continue;
+    }
+    const run = subject.slice(index, index + length);
+    const script = dominantScript(run);
+    // Words of the field's own end the chain. Characters with no script do not: a space or a comma
+    // the field puts between two fragments joins them as surely as nothing between them would. A
+    // run of punctuation is the same case from the other side — it has no script to end a chain
+    // with, and none to join one by.
+    if (scriptRatios(sinceRun).letters > 0) chain.clear();
+    // The whole run, because one character of it is nothing to score when that character is
+    // punctuation, which `scriptAgrees` reads as `other`.
+    else if (script !== 'other' && chain.has(script)) residual += run;
+    if (script !== 'other') chain.add(script);
+    sinceRun = '';
+    index += length;
+  }
+  return residual;
+}
+
+/**
+ * How much of `subject` at `index` the request already carries, in UTF-16 units, or 0 when what is
+ * there is not a quoted run. `index` is always at the start of a character, and so is the end of
+ * what this returns.
+ */
+function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number {
+  // The n-gram set answers the common case in constant time; only a real candidate is extended. Its
+  // grams are UTF-16 units, which can only admit a candidate the character count below rejects.
+  if (!corpus.grams.has(subject.slice(index, index + MIN_QUOTED_RUN))) return 0;
+  let length = MIN_QUOTED_RUN;
+  while (index + length + 1 <= subject.length
+    && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
+  // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
+  // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with `𠮸`.
+  // The run gives that half back, so what the caller's junction keeps is a whole character. A high
+  // surrogate reads as a code point above the BMP when its low half follows and as itself when the
+  // field carries it alone; both are a run ending on half a character.
+  const last = subject.codePointAt(index + length - 1) ?? 0;
+  if (last > 0xFFFF || (last >= 0xD800 && last <= 0xDBFF)) length -= 1;
+  // Counted in characters, and after the half goes back: two supplementary characters are four
+  // UTF-16 units and still a two-character coincidence. A coincidence is not a quote, so the field
+  // keeps those characters and is scored on them, which is what the minimum is for.
+  return characterCount(subject.slice(index, index + length)) >= MIN_QUOTED_RUN ? length : 0;
+}
+
+/** How many characters `text` holds: a supplementary one is two UTF-16 units and one of them. */
+function characterCount(text: string): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    // Stepping over the low half, so the pair counts once. A half on its own counts once too.
+    if ((text.codePointAt(index) ?? 0) > 0xFFFF) index += 1;
+    count += 1;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +348,82 @@ export type DegradedReason = (typeof DEGRADED_PRECEDENCE)[number];
  * the queue waits or the chain takes the batch. A second copy is the one that would drift.
  */
 export const CHAIN_STOPS = new Set<DegradedReason>(['consent_changed', 'unusable_output']);
+
+/**
+ * What `revalidateSources` writes when one pass puts a source back. `observation_batch_sources.reason`
+ * holds more values than these and the column has no CHECK; `src/why.ts`'s `SOURCE_REASONS` is the
+ * full vocabulary, and keeping the two in step is #289.
+ */
+export type SourceReason = 'detector_failed' | 'source_context_unknown' | 'consent_changed';
+
+/**
+ * What each deferral makes of the record that carries it. A lost consent is the consent reason, a
+ * detector that could not run is an unusable answer, and a source held for an origin this worker
+ * cannot verify leaves no summarizer reason at all. A new `SourceReason` has to choose here rather
+ * than fall into one of these by default; severity is `DEGRADED_PRECEDENCE`, not this key order.
+ *
+ * Holding is honest for one pass but is not a resting state: the sources that reach it in practice
+ * come from setup/doctor probes, which capture from a temporary root they delete (#279).
+ */
+const SOURCE_OUTCOME = {
+  consent_changed: 'consent_changed',
+  detector_failed: 'unusable_output',
+  source_context_unknown: null,
+} satisfies Record<SourceReason, DegradedReason | null>;
+
+/**
+ * Reasons that say where a source is rather than what became of it: it was excerpted out of the
+ * request, only part of it was captured, a migration parked it for an explicit choice, or the
+ * request it was assigned to was too large to send. None is a generation failure, so none should
+ * reach the fail-closed default.
+ *
+ * Two of them, `work_selection_required` and `request_page_limit`, are written by
+ * `reconcilePendingDestinations` beside a batch it marks `rule_based`, so surfacing either would
+ * contradict the batch's own verdict. The other three carry no such guarantee: `not_sent` comes
+ * from `outcomeForSource` and `partial_capture` from `settleSources`'s short-circuit, both beside
+ * whatever reason that apply had, including none, and `secret` is written by `revalidateSources`
+ * before the batch has a reason at all.
+ *
+ * `secret` is unreachable on both paths: `SUMMARIZABLE_ROW_SQL` excludes `sensitivity = 'secret'`,
+ * so the session reader never counts such a receipt, and `recordedDeferrals` reads only
+ * `outcome = 'deferred'` while a secret source is written `rejected`. It stays because the default
+ * would be wrong if either changed, not because anything exercises it.
+ */
+const QUIET_REASONS = new Set([
+  'not_sent', 'partial_capture', 'work_selection_required', 'request_page_limit', 'secret',
+]);
+
+/**
+ * What one source's latest receipt says about generation health, or null when it says nothing.
+ *
+ * The default is fail-closed on purpose. A receipt exists only once something happened to the
+ * source, so a reason that is neither named below nor a provider failure nor a queue state is an
+ * answer that came back and could not be used — `uncovered/unaccounted` lands here. The states
+ * where nothing has happened yet return null instead. `rejected/secret` is the one exception to
+ * that reading of `rejected`, and it is unreachable; see `QUIET_REASONS`.
+ *
+ * The named tables are consulted before `DEGRADED_PRECEDENCE`, so a reason that is spelled like a
+ * provider failure still gets the mapping this module chose for it. `consent_changed` is in both
+ * and maps to itself, which is why the order is not observable today — but a future `SourceReason`
+ * that collides would otherwise be silently dead.
+ */
+function sourceOutcome(outcome: string, reason: unknown): DegradedReason | null {
+  // `assigned` is a source waiting for its batch's first pass; `legacy_unknown` predates receipts;
+  // `processed` is a source the summarizer answered for, whether or not its last portion is in.
+  if (outcome === 'assigned' || outcome === 'legacy_unknown' || outcome === 'processed') return null;
+  if (typeof reason !== 'string') return null;
+  if (Object.hasOwn(SOURCE_OUTCOME, reason)) return SOURCE_OUTCOME[reason as SourceReason];
+  if (QUIET_REASONS.has(reason)) return null;
+  // A provider failure is written as the reason itself.
+  if (DEGRADED_PRECEDENCE.includes(reason as DegradedReason)) return reason as DegradedReason;
+  return 'unusable_output';
+}
+
+/** The outcome a set of receipt reasons makes, by the shared severity order. */
+export function deferralOutcome(reasons: readonly string[]): DegradedReason | null {
+  const mapped = reasons.map((reason) => sourceOutcome('deferred', reason));
+  return mostSevereReason(mapped.filter((reason): reason is DegradedReason => reason !== null));
+}
 
 /** The reason a record keeps when several apply: the first match in `DEGRADED_PRECEDENCE`. */
 export function mostSevereReason(reasons: Iterable<DegradedReason>): DegradedReason | null {
@@ -357,18 +598,50 @@ function sessionSummaryText(
 function degradedReasonForSession(db: DatabaseSync, sessionId: string): DegradedReason | null {
   // Only the latest outcome of still-unprocessed sources degrades current generation. A failed
   // historical attempt cannot keep a successfully recovered session degraded forever.
-  const reasons = new Set(db
-    .prepare(`SELECT DISTINCT b.degraded_reason FROM observation_batches b
+  //
+  // Each source carries its own receipt, and the batch it was taken out of may have gone on to apply
+  // without a reason of its own: when some sources of a batch fail detection, come back unaccounted
+  // for or have their observation dropped while the rest summarize, the batch's `degraded_reason` is
+  // NULL and only the receipt says so. Reading the batch alone would hide every one of those behind
+  // the held-source default this function's caller applies.
+  //
+  // `SUMMARY_SOURCE_SQL` gates the receipt only, not the batch. A receipt is that row's own verdict,
+  // so a row the summary never treated as a source must not label the summary — without this a
+  // partial prompt row, which `revalidateSources` re-reads and defers by name, would blame the
+  // summarizer for text it was never sent. `degraded_reason` is the opposite: it describes the
+  // attempt, not the row, so a batch that really failed still has to be reported even when every
+  // row it left behind is one the summary would not have quoted.
+  //
+  // Every receipt tied on the newest `recorded_at`, not one of them. Two passes in the same
+  // millisecond leave two, and reading both is the fail-closed side of that tie: the severer verdict
+  // wins rather than whichever row sorts last. It is not free — a source re-batched in the same
+  // millisecond still reports the failed batch it just left, which is the invariant above bending —
+  // but the other direction loses a real failure, and `receipts tied on the same millisecond are all
+  // read` is what holds the choice in place. `oboete why` and `replay-evaluate.ts` both pick exactly
+  // one instead, so the readers can name different receipts for the same source under a tie (#289).
+  //
+  // The subquery is correlated on `r.id` alone. A receipt on another session's batch would be picked
+  // and then dropped by the outer `b.session_id`, losing the source's degradation — unreachable,
+  // because `raw_events.session_id` is never updated and cohorts are selected per session.
+  const reasons = new Set<DegradedReason>();
+  for (const row of db
+    .prepare(`SELECT b.degraded_reason AS batch_reason, bs.outcome AS outcome,
+        bs.reason AS source_reason,
+        CASE WHEN ${SUMMARY_SOURCE_SQL} THEN 1 ELSE 0 END AS is_summary_source
+      FROM observation_batches b
       JOIN observation_batch_sources bs ON bs.batch_id = b.id
       JOIN raw_events r ON r.id = bs.raw_event_id
       WHERE b.session_id = ? AND r.processing_state <> 'processed'
         AND bs.recorded_at = (SELECT MAX(latest.recorded_at) FROM observation_batch_sources latest
           WHERE latest.raw_event_id = r.id)`)
-    .all(sessionId)
-    .map((row) => row.degraded_reason)
-    .filter((reason): reason is DegradedReason =>
-      DEGRADED_PRECEDENCE.includes(reason as DegradedReason),
-    ));
+    .all(sessionId)) {
+    if (DEGRADED_PRECEDENCE.includes(row.batch_reason as DegradedReason)) {
+      reasons.add(row.batch_reason as DegradedReason);
+    }
+    if (row.is_summary_source !== 1) continue;
+    const fromSource = sourceOutcome(String(row.outcome), row.source_reason);
+    if (fromSource !== null) reasons.add(fromSource);
+  }
   return mostSevereReason(reasons);
 }
 
@@ -531,7 +804,10 @@ function summarizeSession(
     FROM raw_events WHERE session_id = ? AND ${SUMMARY_SOURCE_SQL}`).get(sessionId)!;
   const generationPending = sourceState.pending === 1;
   const sensitivity = strictest(learnedSensitivity, (['eligible', 'local_only', 'private'] as const)[Number(sourceState.sensitivity)]);
-  const degraded = generationPending ? degradedReasonForSession(db, sessionId) ?? 'unusable_output' : null;
+  // A pending source whose batch recorded no failure has not been refused by a summarizer: it is
+  // held (an origin this worker cannot verify) or still queued, so the notes are rule-based and
+  // say only that. Blaming the summarizer here re-labels every held batch as an unusable answer.
+  const degraded = generationPending ? degradedReasonForSession(db, sessionId) ?? 'rule_based' : null;
   const material = materialHash(title, body);
   const content = workId === null ? contentHash(repoId, material) : sha256Json(['work-session-summary-v1', repoId, workId, material]);
   const memoryId = memoryIdFor(content);

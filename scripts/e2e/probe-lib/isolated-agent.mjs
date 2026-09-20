@@ -64,6 +64,11 @@ export function assertAgentOutput(output, facts, { requireDegraded = false } = {
   };
 }
 
+/** The stem a run's ordered pair seeds its facts with. */
+export function factStem(runId, from, to) {
+  return `fact-${runId}-${from}-to-${to}`;
+}
+
 export function factSet(stem) {
   return [
     `${stem}-1: the build token is cedar.`,
@@ -309,40 +314,70 @@ export async function launchAgent(configuration
   return { ...proc, stdoutPath, stderrPath };
 }
 
-function searchContainsFacts(output, facts) {
+/** True when some returned memory carries `fact`. One row per fact is as good as one row for all. */
+export function searchContainsFact(output, fact) {
   let parsed;
   try {
     parsed = JSON.parse(output);
   } catch {
     return false;
   }
-  return (parsed?.memories ?? []).some((row) => assertAgentOutput(JSON.stringify(row), facts).pass);
+  return (parsed?.memories ?? []).some((row) => assertAgentOutput(JSON.stringify(row), [fact]).pass);
+}
+
+/**
+ * The precondition of the recall check: every seeded fact is retrievable before the receiving agent
+ * is asked for it. Each fact is searched for on its own, because the observer is asked to emit one
+ * observation per declared fact — requiring a single row to hold all three would fail on the shape
+ * the prompt asks for, while a row that does hold all three still satisfies every search.
+ */
+/**
+ * One pass over the facts not found yet, adding each one the search returns to `found`. Returns
+ * `false` when the repository holds no index at all, which no further waiting fixes.
+ */
+async function searchPass(missing, found, context) {
+  for (const fact of missing) {
+    const remaining = context.deadline - context.dependencies.now();
+    if (remaining <= 0) return true;
+    // One pair of files per fact: `runTimed` opens them with "w", so searching every fact into one
+    // pair would leave the last fact's output as the whole record of a pass that claims all of them.
+    // A fact keeps its slot across attempts, and a fact already found is not searched for again.
+    const slot = context.facts.indexOf(fact);
+    const result = await context.dependencies.runTimed(["oboete", "search", fact, "--json"], {
+      cwd: context.repo,
+      env: context.env,
+      stdoutPath: path.join(context.directory, `search-${slot}.stdout.txt`),
+      stderrPath: path.join(context.directory, `search-${slot}.stderr.txt`),
+      timeoutMs: Math.min(15_000, remaining),
+    });
+    if (result.exitCode === 3) return false;
+    if (result.exitCode === 0 && searchContainsFact(result.stdout, fact)) found.add(fact);
+  }
+  return true;
 }
 
 export async function waitForSummary(repo, directory, facts, options, dependencies, env) {
   fs.mkdirSync(directory, { recursive: true });
-  const stdoutPath = path.join(directory, "stdout.txt");
-  const stderrPath = path.join(directory, "stderr.txt");
-  const deadline = dependencies.now() + options.timeoutMs;
+  const context = {
+    repo,
+    env,
+    dependencies,
+    directory,
+    facts,
+    deadline: dependencies.now() + options.timeoutMs,
+  };
   let attempts = 0;
-  while (dependencies.now() < deadline) {
+  const found = new Set();
+  const missingFacts = () => facts.filter((fact) => !found.has(fact));
+  while (dependencies.now() < context.deadline) {
     attempts += 1;
-    const remaining = deadline - dependencies.now();
-    const result = await dependencies.runTimed(["oboete", "search", facts[0], "--json"], {
-      cwd: repo,
-      env,
-      stdoutPath,
-      stderrPath,
-      timeoutMs: Math.min(15_000, remaining),
-    });
-    if (result.exitCode === 0 && searchContainsFacts(result.stdout, facts)) {
-      return { found: true, attempts };
-    }
-    if (result.exitCode === 3) return { found: false, attempts };
-    const wait = Math.min(1_000, deadline - dependencies.now());
+    const missing = missingFacts();
+    if (!(await searchPass(missing, found, context))) return { found: false, attempts, missingFacts: missingFacts() };
+    if (found.size === facts.length) return { found: true, attempts, missingFacts: [] };
+    const wait = Math.min(1_000, context.deadline - dependencies.now());
     if (wait > 0) await dependencies.sleep(wait);
   }
-  return { found: false, attempts };
+  return { found: false, attempts, missingFacts: missingFacts() };
 }
 
 export function configureRemote(repo, directory, options, dependencies) {

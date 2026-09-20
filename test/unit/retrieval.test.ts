@@ -1,22 +1,46 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
+import { configSchema } from '../../src/config.js';
+import { workerItem } from '../../src/doctor/storage.js';
 import { openDatabase } from '../../src/db/open.js';
+import { grantVisibility } from '../../src/db/queries.js';
+import type { Line } from '../../src/fixture/replay.js';
+import { CHANNEL_CAPS } from '../../src/injection/budget.js';
+import { createInjection, planItems } from '../../src/injection/ledger.js';
+import { buildPromptPack } from '../../src/injection/pack.js';
+import { runGet, searchMemories } from '../../src/memories-cli.js';
 import { oboetePaths } from '../../src/paths.js';
+import { resolveRepoIdentity } from '../../src/repo-identity.js';
 import { buildMatch, cjkBigrams, isCjk, segmentQuery } from '../../src/retrieval/fts.js';
 import { searchCandidates } from '../../src/retrieval/query.js';
 import type { RankRow } from '../../src/retrieval/rank.js';
 import {
-  applyThreshold,
   charTrigramCosine,
   cutToBudget,
   mmrSelect,
-  normalizeBm25,
   rankCandidates,
   rrfFuse,
 } from '../../src/retrieval/rank.js';
+import { runWhy } from '../../src/why.js';
+import {
+  buildFactSeedingPrompt,
+  factSet,
+  recallPrompt,
+} from '../../scripts/e2e/probe-lib/isolated-agent.mjs';
+import { repositoryRoot } from '../helpers/compile-cache.js';
 import { withTempHome } from '../helpers/home.js';
+import {
+  PAIR_FACTS,
+  PAIR_RECALL_PROMPT,
+  PAIR_ROWS,
+  PAIR_SEEDING_PROMPT,
+  PAIR_STEM,
+} from '../helpers/pair-275.js';
+import { seedWorkBinding } from '../helpers/work.js';
 
 const SCOPE_A = { where: 'm.repo_id = ? AND m.deleted_at IS NULL', params: ['repo_a'] };
 
@@ -42,21 +66,93 @@ function insertRepo(db: DatabaseSync, id: string, identity: string): void {
 
 function insertMemory(
   db: DatabaseSync,
-  memory: { id: string; repoId: string; title: string; body: string; createdAt?: number },
+  memory: { id: string; repoId: string; title: string; body: string; createdAt?: number; type?: string },
 ): void {
   const cjk = cjkBigrams(`${memory.title} ${memory.body}`);
   db.prepare(
     `INSERT INTO memories (id, repo_id, type, title, body, cjk_bigrams, content_hash, sensitivity, created_at)
-     VALUES (?, ?, 'discovery', ?, ?, ?, ?, 'local_only', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'local_only', ?)`,
   ).run(
     memory.id,
     memory.repoId,
+    memory.type ?? 'discovery',
     memory.title,
     memory.body,
     cjk,
     `hash_${memory.id}`,
     memory.createdAt ?? 1,
   );
+}
+
+function insertSearchable(
+  db: DatabaseSync,
+  memory: {
+    id: string;
+    repoId: string;
+    title: string;
+    body: string;
+    createdAt?: number;
+    type?: string;
+    validTo?: number | null;
+    supersededBy?: string | null;
+  },
+): void {
+  insertMemory(db, memory);
+  grantVisibility(db, memory.id, { audience: 'project', repoId: memory.repoId }, 'migration', memory.createdAt ?? 1);
+  db.prepare('UPDATE memories SET valid_to = ?, superseded_by = ? WHERE id = ?').run(
+    memory.validTo ?? null,
+    memory.supersededBy ?? null,
+    memory.id,
+  );
+}
+
+function seedPairCorpus(
+  db: DatabaseSync,
+  extra?: { id: string; title: string; body: string },
+): void {
+  insertRepo(db, 'repo_a', '/tmp/oboete-a');
+  for (const memory of PAIR_ROWS) {
+    insertSearchable(db, {
+      id: memory.id,
+      repoId: 'repo_a',
+      title: memory.title,
+      body: memory.body,
+      type: memory.type,
+    });
+  }
+  if (extra !== undefined) {
+    insertSearchable(db, { id: extra.id, repoId: 'repo_a', title: extra.title, body: extra.body });
+  }
+}
+
+type FactTag = NonNullable<NonNullable<Line['tags']>['fact']>;
+
+// Plain strings only. 15 fixture lines carry a tool result as `output: [byte, ...]` and two of them
+// are fact-tagged, but each of those also carries the same sentence as a string, so decoding the
+// bytes changes no fact's sentence. The assertion below names this helper if that ever stops being
+// true, rather than sending the reader to the fixture.
+function payloadStrings(payload: unknown): string[] {
+  if (typeof payload === 'string') return [payload];
+  if (payload === null || typeof payload !== 'object') return [];
+  return Object.values(payload).flatMap(payloadStrings);
+}
+
+function fixtureFacts(): Array<FactTag & { sentence: string }> {
+  const facts: Array<FactTag & { sentence: string }> = [];
+  for (const raw of readFileSync(join(repositoryRoot(), 'test/fixtures/events-1000.jsonl'), 'utf8')
+    .trim()
+    .split('\n')) {
+    const line = JSON.parse(raw) as Line;
+    const fact = line.tags?.fact;
+    if (fact === undefined) continue;
+    const sentence = payloadStrings(line.payload)
+      .flatMap((text) => text.split('\n'))
+      .find((entry) => entry.includes(fact.expect));
+    assert.ok(sentence !== undefined,
+      `fact ${fact.id} has no payload line containing ${fact.expect}: either that line no longer carries the sentence, or it now carries it only as a tool output byte array, which payloadStrings does not decode`);
+    facts.push({ ...fact, sentence });
+  }
+  return facts;
 }
 
 function seedSearchDb(db: DatabaseSync): void {
@@ -402,55 +498,17 @@ test('searchCandidates does not throw on FTS5 syntax', async () => {
   });
 });
 
-test('normalizeBm25 gives 1.0 to the best score', () => {
-  const out = normalizeBm25(
-    [
-      row({ id: 'best', scoreTrigram: -10 }),
-      row({ id: 'mid', scoreTrigram: -5 }),
-      row({ id: 'weak', scoreTrigram: -2 }),
-    ],
-    'scoreTrigram',
-  );
-  assert.equal(out.find((item) => item.id === 'best')?.normTrigram, 1);
-  assert.equal(out.find((item) => item.id === 'mid')?.normTrigram, 0.5);
-  assert.equal(out.find((item) => item.id === 'weak')?.normTrigram, 0.2);
-});
-
-test('applyThreshold drops a row below 0.3 and keeps LIKE-only last', () => {
-  const normalized = normalizeBm25(
-    [
-      row({ id: 'best', scoreTrigram: -10 }),
-      row({ id: 'weak', scoreTrigram: -2 }),
-      row({ id: 'like', viaLike: true, title: 'ok', body: 'ok' }),
-    ],
-    'scoreTrigram',
-  );
-  const { kept, dropped } = applyThreshold(normalized, 0.3);
-  assert.deepEqual(
-    dropped.map((item) => item.id),
-    ['weak'],
-  );
-  assert.deepEqual(
-    kept.map((item) => item.id),
-    ['best', 'like'],
-  );
-});
-
 test('rrfFuse ranks a row present in both tables above a row in one', () => {
   const fused = rrfFuse([
     row({
       id: 'both',
       scoreTrigram: -10,
       scoreCjk: -8,
-      normTrigram: 1,
-      normCjk: 1,
     }),
     row({
       id: 'one',
       scoreTrigram: -9,
       scoreCjk: null,
-      normTrigram: 0.9,
-      normCjk: 0,
     }),
     row({ id: 'like', viaLike: true, title: 'ok', body: 'ok' }),
   ]);
@@ -533,7 +591,7 @@ test('cutToBudget omits overflow rows with reason budget', () => {
   );
 });
 
-test('rankCandidates returns bm25, rrf and mmr scores on included rows', () => {
+test('rankCandidates returns rrf and mmr scores on included rows', () => {
   const result = rankCandidates(
     [
       row({ id: 'both', title: 'alpha one', body: 'unique alpha body', scoreTrigram: -10, scoreCjk: -8 }),
@@ -546,15 +604,507 @@ test('rankCandidates returns bm25, rrf and mmr scores on included rows', () => {
         scoreCjk: -7,
       }),
     ],
-    { threshold: 0.3, lambda: 0.5, budgetChars: 10_000, limit: 10 },
+    { lambda: 0.5, budgetChars: 10_000, limit: 10 },
   );
   assert.ok(result.included.length >= 1);
   for (const item of result.included) {
-    assert.equal(typeof item.score_bm25, 'number');
     assert.equal(typeof item.score_rrf, 'number');
     assert.equal(typeof item.score_mmr, 'number');
   }
-  assert.ok(result.included.every((item) => item.id !== 'weak'));
-  assert.ok(result.omitted.some((item) => item.id === 'weak' && item.reason === 'below_threshold'));
+  assert.ok(result.included.some((item) => item.id === 'weak'));
   assert.ok(result.omitted.some((item) => item.id === 'dup' && item.reason === 'mmr_redundant'));
+  assert.equal(
+    result.omitted.map((item) => item.reason).join(','),
+    'mmr_redundant',
+  );
+});
+
+// Pin: measured on current product code (title = fact id, body = sentence) through searchMemories.
+const MEASURED_FIRST_RANK_COUNT = 39;
+
+test('searchMemories returns each events-1000 fact among the first five through the search surface', async () => {
+  const facts = fixtureFacts();
+  assert.equal(facts.length, 40);
+  assert.equal(facts.filter((fact) => fact.lang === 'ja').length, 20);
+  assert.equal(facts.filter((fact) => fact.lang === 'en').length, 20);
+
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
+      for (const fact of facts) {
+        insertSearchable(opened.db, {
+          id: fact.id,
+          repoId: 'repo_a',
+          title: fact.id,
+          body: fact.sentence,
+        });
+      }
+      const placements = facts.map((fact) => {
+        const ranked = searchMemories(opened.db, {
+          repoId: 'repo_a',
+          paths,
+          query: fact.query,
+          limit: 50,
+        });
+        const position = ranked.findIndex((row) => row.id === fact.id);
+        const above = position > 0 ? ranked.slice(0, position).map((row) => row.id) : [];
+        return { id: fact.id, query: fact.query, position, above };
+      });
+      for (const fact of placements) {
+        assert.ok(
+          fact.position >= 0 && fact.position < 5,
+          `fact ${fact.id} query ${fact.query} position ${fact.position < 0 ? 'absent' : String(fact.position)} above [${fact.above.join(', ')}]`,
+        );
+      }
+      const notFirst = placements.filter((fact) => fact.position !== 0);
+      const firstCount = facts.length - notFirst.length;
+      const notFirstText =
+        notFirst.length === 0
+          ? '(none)'
+          : notFirst
+              .map((fact) => `${fact.id} query ${fact.query} position ${fact.position} above [${fact.above.join(', ')}]`)
+              .join('; ');
+      assert.ok(
+        firstCount >= MEASURED_FIRST_RANK_COUNT,
+        `first-rank count ${firstCount} (measured ${MEASURED_FIRST_RANK_COUNT}); not first: ${notFirstText}`,
+      );
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('rankCandidates ignores created_at when trigram and cjk scores are equal', () => {
+  const older = 1;
+  const newer = Date.now();
+  const alpha = row({
+    id: 'a_old',
+    title: 'Hydrazine tank',
+    body: 'The hydrazine tank uses a burst disk.',
+    scoreTrigram: -2,
+    scoreCjk: -2,
+    created_at: older,
+  });
+  const omega = row({
+    id: 'z_new',
+    title: 'Kerosene pump',
+    body: 'The kerosene pump runs at two thousand RPM.',
+    scoreTrigram: -2,
+    scoreCjk: -2,
+    created_at: newer,
+  });
+  const options = { lambda: 0.5, budgetChars: 10_000, limit: 10 };
+  const first = rankCandidates([alpha, omega], options);
+  const swapped = rankCandidates(
+    [
+      { ...alpha, created_at: newer },
+      { ...omega, created_at: older },
+    ],
+    options,
+  );
+  const expected = [alpha.id, omega.id].sort();
+  assert.deepEqual(first.included.map((item) => item.id), expected);
+  assert.deepEqual(swapped.included.map((item) => item.id), expected);
+});
+
+test('searchMemories returns a relevant older fact among newer unrelated memories', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
+      insertSearchable(opened.db, {
+        id: 'm_old',
+        repoId: 'repo_a',
+        title: 'Busy timeout',
+        body: 'The busy timeout for hooks is 150 ms.',
+        createdAt: 1,
+      });
+      insertSearchable(opened.db, {
+        id: 'm_new',
+        repoId: 'repo_a',
+        title: 'SQLite',
+        body: 'SQLite stores application data.',
+        createdAt: Date.now(),
+      });
+      insertSearchable(opened.db, {
+        id: 'm_newer',
+        repoId: 'repo_a',
+        title: 'WAL journal',
+        body: 'Write-ahead logging is ok for readers.',
+        createdAt: Date.now(),
+      });
+      const found = searchMemories(opened.db, {
+        repoId: 'repo_a',
+        paths,
+        query: 'What is the SQLite busy timeout?',
+        limit: 10,
+      });
+      assert.equal(
+        found[0]?.id,
+        'm_old',
+        `older fact not first; returned ${found.map((row) => row.id).join(', ') || '(none)'}`,
+      );
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('searchMemories hides a superseded fact unless history is requested', async () => {
+  await withTempHome(async (home) => {
+    const repo = join(home, 'repos', 'current');
+    mkdirSync(repo, { recursive: true });
+    const identity = resolveRepoIdentity(repo);
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, identity.id, identity.normalizedIdentity);
+      insertSearchable(opened.db, {
+        id: 'm_current',
+        repoId: identity.id,
+        title: 'Busy timeout',
+        body: 'The busy timeout is 2000 ms.',
+        createdAt: 20,
+      });
+      insertSearchable(opened.db, {
+        id: 'm_old',
+        repoId: identity.id,
+        title: 'Busy timeout',
+        body: 'The busy timeout is 150 ms.',
+        createdAt: 10,
+        validTo: 15,
+        supersededBy: 'm_current',
+      });
+      const query = 'busy timeout';
+      const current = searchMemories(opened.db, { repoId: identity.id, paths, query, limit: 10 });
+      const currentIds = current.map((row) => row.id).join(', ') || '(none)';
+      assert.ok(current.some((row) => row.id === 'm_current'), `current fact absent: ${currentIds}`);
+      assert.equal(current.some((row) => row.id === 'm_old'), false, `superseded fact returned: ${currentIds}`);
+      const withHistory = searchMemories(opened.db, {
+        repoId: identity.id,
+        paths,
+        query,
+        limit: 10,
+        history: true,
+      });
+      const withHistoryIds = withHistory.map((row) => row.id).join(', ') || '(none)';
+      assert.ok(withHistory.some((row) => row.id === 'm_current'), `current fact absent with history: ${withHistoryIds}`);
+      assert.ok(withHistory.some((row) => row.id === 'm_old'), `superseded fact absent with history: ${withHistoryIds}`);
+    } finally {
+      opened.db.close();
+    }
+    let stdout = '';
+    let stderr = '';
+    const status = await runGet(['m_old', '--history', '--json'], {
+      cwd: repo,
+      writeOut: (text) => {
+        stdout += text;
+      },
+      writeError: (text) => {
+        stderr += text;
+      },
+    });
+    assert.equal(status, 0, stderr || stdout);
+    const historical = JSON.parse(stdout) as { valid_to?: number | null; superseded_by?: string | null };
+    assert.ok(historical.valid_to != null, `valid_to missing or null in get --history --json: ${stdout}`);
+    assert.equal(historical.superseded_by, 'm_current', `superseded_by in get --history --json: ${stdout}`);
+  });
+});
+
+test('searchMemories returns two distinct facts that share a title when they are the only candidates', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
+      insertSearchable(opened.db, {
+        id: 'm_hooks',
+        repoId: 'repo_a',
+        title: 'Busy timeout',
+        body: 'The busy timeout for hooks is 150 ms.',
+      });
+      insertSearchable(opened.db, {
+        id: 'm_cli',
+        repoId: 'repo_a',
+        title: 'Busy timeout',
+        body: 'The busy timeout for the CLI is 2000 ms.',
+      });
+      const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: 'busy timeout', limit: 10 });
+      assert.deepEqual(found.map((row) => row.id).sort(), ['m_cli', 'm_hooks']);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+// Runs whether or not the artifact below is skipped: a reword in the probe library must not leave
+// that corpus reproducing a prompt no agent sends. The comparison is exact, against what the library
+// actually returns, so a change to the prompt text fails it — but only once the change is built.
+// The import is static and esbuild inlines it, so `npm test` sees an edit to the source and a bare
+// `node --test build/...` does not.
+test('the pinned pair prompts are still the ones the probe library sends', () => {
+  assert.deepEqual(factSet(PAIR_STEM), PAIR_FACTS);
+  assert.equal(recallPrompt('codex', false), PAIR_RECALL_PROMPT);
+  assert.equal(buildFactSeedingPrompt(PAIR_FACTS), PAIR_SEEDING_PROMPT);
+  // The pair's facts hold no apostrophe, so they cannot show whether the command is shell-quoted.
+  // Find the line rather than index it: a line added above the command would otherwise fail this
+  // with a diff between two unrelated prompt lines instead of naming the quoting rule.
+  assert.equal(
+    buildFactSeedingPrompt(["it's a", 'b', 'c'] as const).split('\n').find((line) => line.startsWith('printf ')),
+    String.raw`printf '%s\n' 'it'\''s a' 'b' 'c' >> NOTES.md`,
+  );
+});
+
+// Artifact for issue #275: the five memories of the `claude-to-codex` pair of the
+// 2026-09-17T15-05-08-894Z dogfood run (JST 2026-09-18) as they stood when the receiving prompt
+// pack was built. Rows live in `test/helpers/pair-275.ts`.
+test('searchMemories returns the fact-bearing memory of a five-row corpus', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      seedPairCorpus(opened.db);
+      const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 });
+      assert.ok(
+        found.some((row) => row.id === 'm_fact'),
+        `fact-bearing memory absent; returned ${found.map((row) => row.id).join(', ') || '(none)'}`,
+      );
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('searchMemories still returns the fact-bearing memory with a non-matching sixth row', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      // Japanese, so it shares no character trigram with the English prompt and the prompt holds no
+      // CJK segment to query the bigram index with: the row is in the corpus and matches nothing.
+      seedPairCorpus(opened.db, {
+        id: 'm_unrelated',
+        title: '配管の設計',
+        body: '来週の会議で配管の設計を見直す。',
+      });
+      const found = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 });
+      const ids = found.map((row) => row.id);
+      assert.ok(
+        ids.includes('m_fact'),
+        `fact-bearing memory absent with a sixth row; returned ${ids.join(', ') || '(none)'}`,
+      );
+      // Admission is the index's own match: a row the query does not match is not returned, which is
+      // what keeps "no threshold" from meaning "everything".
+      assert.ok(!ids.includes('m_unrelated'), `the non-matching row was returned; got ${ids.join(', ')}`);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
+  // Distinct bodies, or MMR drops b and c as duplicates of a and the comparison below is between
+  // two one-element lists, which no rescaling could change.
+  const rows = [
+    row({ id: 'a', title: 'rotation', body: 'the deployment key rotates monthly', scoreTrigram: -0.4361279, scoreCjk: -0.01 }),
+    row({ id: 'b', title: 'colour', body: 'the distribution colour is amber', scoreTrigram: -0.0000064033, scoreCjk: -0.008 }),
+    row({ id: 'c', title: 'retries', body: 'three retries, then give up', scoreTrigram: -0.0000046696, scoreCjk: null }),
+  ];
+  const options = { lambda: 0.5, budgetChars: 10_000, limit: 10 };
+  const selected = (input: RankRow[]) => rankCandidates(input, options).included.map((item) => item.id);
+  const base = selected(rows);
+  assert.ok(base.length > 1, `the pin needs more than one survivor to compare; got ${base.join(', ')}`);
+  assert.deepEqual(
+    selected(
+      rows.map((item) => ({
+        ...item,
+        scoreTrigram: item.scoreTrigram === null ? null : item.scoreTrigram * 1_000,
+      })),
+    ),
+    base,
+  );
+  assert.deepEqual(
+    selected(
+      rows.map((item) => ({
+        ...item,
+        scoreCjk: item.scoreCjk === null ? null : item.scoreCjk * 1_000,
+      })),
+    ),
+    base,
+  );
+});
+
+test('rankCandidates keeps a clamp-scale BM25 candidate', () => {
+  const result = rankCandidates(
+    [
+      row({ id: 'strong', title: 'alpha', body: 'unique alpha body', scoreTrigram: -0.4361279 }),
+      row({ id: 'clamped', title: 'notes', body: 'fact notes', scoreTrigram: -0.0000064033 }),
+    ],
+    { lambda: 0.5, budgetChars: 10_000, limit: 10 },
+  );
+  assert.ok(
+    result.included.some((item) => item.id === 'clamped'),
+    `clamp-scale candidate omitted; included ${result.included.map((item) => item.id).join(', ') || '(none)'} omitted ${result.omitted.map((item) => `${item.id}:${item.reason}`).join(', ')}`,
+  );
+});
+
+test('a config with the legacy threshold key retrieves the same as one without', async () => {
+  const facts = fixtureFacts();
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      insertRepo(opened.db, 'repo_a', '/tmp/oboete-a');
+      for (const fact of facts) {
+        insertSearchable(opened.db, { id: fact.id, repoId: 'repo_a', title: fact.id, body: fact.sentence });
+      }
+      const idsFor = () =>
+        facts.map((fact) =>
+          searchMemories(opened.db, { repoId: 'repo_a', paths, query: fact.query, limit: 50 }).map((row) => row.id),
+        );
+      const without = idsFor();
+      writeFileSync(paths.config, '[injection]\nthreshold = 0.99\n');
+      assert.deepEqual(idsFor(), without);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('buildPromptPack on the five-row receipt carries the three fact strings through the trigram index', async () => {
+  await withTempHome(async (home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 2000 });
+    try {
+      seedPairCorpus(opened.db);
+      opened.db
+        .prepare(
+          `INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, model,
+             started_at, status, turn_count, context_epoch)
+           VALUES ('s_now', 'repo_a', 'claude', 'native_s_now', 'c1', 'claude-opus-5[1m]', 1, 'active', 1, 0)`,
+        )
+        .run();
+      seedWorkBinding(opened.db, 's_now');
+      opened.db.prepare('UPDATE work_contexts SET root = ?').run('/nonexistent-repository-root');
+      const pack = await buildPromptPack(opened.db, {
+        agent: 'claude',
+        repoId: 'repo_a',
+        repoIdentityDisplay: '/tmp/oboete-a',
+        sessionId: 's_now',
+        conversationId: 'c1',
+        turnId: null,
+        epoch: 0,
+        model: 'claude-opus-5[1m]',
+        channelCap: CHANNEL_CAPS.claude,
+        contextFraction: 0.05,
+        channel: 'claude:UserPromptSubmit',
+        now: 1_700_000_000_000,
+        detect: () => false,
+        directives: [],
+        repoRoot: '/nonexistent-repository-root',
+        prompt: PAIR_RECALL_PROMPT,
+      });
+      assert.notEqual(pack, null, 'the prompt pack should have been built');
+      for (const fact of PAIR_FACTS) {
+        assert.ok(pack!.text.includes(fact), `pack missing ${fact}; text:\n${pack!.text}`);
+      }
+      const found = searchCandidates(opened.db, {
+        text: PAIR_RECALL_PROMPT,
+        scope: { where: "m.repo_id = ? AND m.deleted_at IS NULL AND m.type <> 'session_summary'", params: ['repo_a'] },
+      });
+      const factRow = found.rows.find((item) => item.id === 'm_fact');
+      assert.ok(factRow, `m_fact missing from candidates; ${found.rows.map((item) => item.id).join(', ') || '(none)'}`);
+      assert.notEqual(factRow!.scoreTrigram, null, 'm_fact arrived through the LIKE fallback, not the trigram index');
+      assert.equal(factRow!.viaLike, false);
+      const scores = opened.db
+        .prepare(
+          `SELECT score_bm25 FROM injection_items WHERE injection_id = ? AND decision IN ('planned', 'included')`,
+        )
+        .all(pack!.injectionId);
+      for (const score of scores) {
+        assert.equal(score.score_bm25, null, `new ledger row still wrote score_bm25=${String(score.score_bm25)}`);
+      }
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+test('why still explains a historical below_threshold ledger row', async () => {
+  await withTempHome(async (home) => {
+    const repo = join(home, 'repo');
+    mkdirSync(repo, { recursive: true });
+    const identity = resolveRepoIdentity(repo);
+    const opened = openDatabase({ path: oboetePaths(home).db, timeoutMs: 2000 });
+    try {
+      insertRepo(opened.db, identity.id, identity.normalizedIdentity);
+      insertSearchable(opened.db, {
+        id: 'm_old',
+        repoId: identity.id,
+        title: 'Historical note',
+        body: 'A note omitted by a former threshold.',
+      });
+      opened.db
+        .prepare(
+          `INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, model,
+             started_at, status, turn_count, context_epoch)
+           VALUES ('s_why', ?, 'claude', 'native_why', 's_why', 'claude-opus-5', 1, 'active', 1, 0)`,
+        )
+        .run(identity.id);
+      const injectionId = createInjection(opened.db, {
+        repoId: identity.id,
+        sessionId: 's_why',
+        conversationId: 's_why',
+        turnId: null,
+        kind: 'prompt',
+        channel: 'claude:UserPromptSubmit',
+        state: 'emitted',
+        epoch: 0,
+        packHash: 'hash-why-threshold',
+        charBudget: 1_000,
+        charsUsed: 400,
+        degradedReason: null,
+        createdAt: 1_800_000_000_000,
+      });
+      planItems(opened.db, { id: injectionId, conversationId: 's_why', epoch: 0 }, [
+        {
+          sourceKind: 'memory',
+          memoryId: 'm_old',
+          rawEventId: null,
+          decision: 'omitted',
+          reason: 'below_threshold',
+          rank: null,
+          stale: 0,
+        },
+      ]);
+    } finally {
+      opened.db.close();
+    }
+    let stdout = '';
+    let stderr = '';
+    const status = await runWhy(['s_why'], {
+      cwd: repo,
+      now: () => 1_800_000_000_000,
+      writeOut: (text) => {
+        stdout += text;
+      },
+      writeError: (text) => {
+        stderr += text;
+      },
+    });
+    assert.equal(status, 0, stderr || stdout);
+    assert.match(stdout, /the threshold used for that pack/);
+  });
+});
+
+test('doctor reports a set injection.threshold as ignored', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const config = configSchema.parse({ injection: { threshold: 0.4 } });
+    const item = workerItem(null, 1, false, paths, config);
+    assert.match(item.reason, /The deprecated injection\.threshold value 0\.4 is ignored/);
+  });
 });
