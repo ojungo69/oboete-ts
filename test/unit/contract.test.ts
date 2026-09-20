@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  MAX_BODY,
   observerOutputJsonSchema,
   observerOutputSchema,
   shortenDisplayPath,
@@ -201,7 +202,7 @@ test('trimObservation keeps content when the body opens with blank lines', () =>
     const trimmed = trimObservation(observation({ body: `${prefix}${'\u3042'.repeat(2_500)}` }));
     assert.match(trimmed.body, /\n\.\.\. \(\+\d+ omitted\)$/, JSON.stringify(prefix.slice(0, 8)));
     assert.ok(trimmed.body.includes('\u3042'), `content survives ${JSON.stringify(prefix.slice(0, 8))}`);
-    assert.ok(trimmed.body.length <= 2000, JSON.stringify(prefix.slice(0, 8)));
+    assert.ok(trimmed.body.length <= MAX_BODY, JSON.stringify(prefix.slice(0, 8)));
   }
 });
 
