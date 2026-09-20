@@ -137,7 +137,7 @@ Owner amendment, 2026-09-10:
 - [ ] T042 Measure 1,000/10,000/100,000-event resources and seven days of real use with `src/fixture/replay.ts`
   and `scripts/measure-cold-start.mjs`; include local-model consumption. Status: the 1,000-event leg is done
   on both supported Node versions (`scripts/measure-resources.mjs`, receipts in
-  `docs/evidence/memory-core-2026-09/resource-sweep.md`): peak `VmHWM` 107.72 / 100.82 MiB across every process of the run against a
+  `docs/evidence/memory-core-2026-09/resource-sweep.md`): peak `VmHWM` 107.31 / 100.81 MiB across every process of the run against a
   150 MiB bound, the WAL growing under a held reader and recycling to 0 after the product's own stop path,
   no spool file at any sample, and every hook exiting 0. The 10,000- and 100,000-event legs are #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
@@ -425,7 +425,7 @@ writers require separate worktrees. No deployment follows merely from an increme
   `liveBatches=0`, `endReason=stopped` with no sentinel left behind; the WAL recycling to 0 after
   `wal_checkpoint(TRUNCATE)`; and
   peak `VmHWM` under 150 MiB across every process of the run, children measured by the kernel at
-  exit rather than by sampling. Injection p99 (278.8 ms) and the two
+  exit rather than by sampling. Injection p99 (310.6 ms) and the two
   session-start packs without `summary_pending` are reported, not gated, and belong to the timing work rather than this sweep.
   What the run cannot say is stated in the evidence file: a half-minute hold shows no long-run growth
   (#268), 1,051 events is not scale (#267), and `preset = "none"` exercises no provider at all.
