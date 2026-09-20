@@ -7,6 +7,7 @@ import test from "node:test";
 import { runHarness } from "./isolated-user.mjs";
 import {
   claudeNativeSessionFromStart,
+  legStream,
   nativeSessionFromPrompt,
   waitForLifecycleState,
 } from "./probe-lib/isolated-lifecycle.mjs";
@@ -546,6 +547,19 @@ test("daily lifecycle evidence bounds and scrubs reasons while report.json keeps
     for (const row of rows) assert.equal(row.split(" | ").at(-1), `${expected} |`);
     assert.doesNotMatch(markdown, /private pane|OBOETE_.*(?:API_KEY|API_TOKEN|ACCOUNT_ID)|demo[- .]/);
   }
+});
+
+test("a reused run directory links this run's per-fact search output, not the file it kept", (t) => {
+  // One pass used to write `search/stdout.txt`; nothing updates that file now. A run directory that
+  // still holds one would otherwise put an older run's evidence in this run's report.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "leg-stream-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "search"), { recursive: true });
+  fs.writeFileSync(path.join(root, "search/stdout.txt"), "an older run");
+  fs.writeFileSync(path.join(root, "search/search-0.stdout.txt"), "this run");
+  assert.equal(legStream(root, "search", "stdout"), path.join(root, "search/search-0.stdout.txt"));
+  // With no per-fact file the old name is still what a leg of one command writes.
+  assert.equal(legStream(root, "seed", "stdout"), path.join(root, "seed/stdout.txt"));
 });
 
 test("an omitted S2 startup pack fails the seed precondition and links all completed seed legs", async (t) => {
