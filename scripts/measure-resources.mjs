@@ -73,11 +73,15 @@ function missing(error) { return error?.code === 'ENOENT'; }
 function fileBytes(path) {
   try { return statSync(path).size; } catch (error) { if (missing(error)) { return 0; } throw error; }
 }
-function spoolCount(dir) {
+function jsonFiles(dir) {
   try {
     return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')).length;
   } catch (error) { if (missing(error)) { return 0; } throw error; }
 }
+// `src/worker/spool-recovery.ts` moves an entry it cannot read into `spool/failed/` rather than
+// deleting it, so counting only the entries still waiting would report an empty spool for a run
+// that lost an event on the way in.
+function spoolCount(dir) { return jsonFiles(dir) + jsonFiles(join(dir, 'failed')); }
 function isBusy(error) {
   if (error === null || typeof error !== 'object') return false;
   return error.errcode === 5 || error.errcode === 6 || /database is locked|SQLITE_BUSY|SQLITE_LOCKED|\bbusy\b/i.test(`${error.errstr ?? ''} ${error instanceof Error ? error.message : error}`);
@@ -134,8 +138,11 @@ function adopt(pid, observe, group = false) {
 // A worker pid is taken from the log once. The line stays in the log after that process ends, and a
 // pid carrying that number later belongs to somebody else.
 function adoptLogged(pid, atMs) {
-  if (loggedPids.has(pid)) return;
-  loggedPids.add(pid);
+  // Keyed by the line, not by the pid: a pid the kernel hands out twice during one run would
+  // otherwise suppress every later `run start` that carries it.
+  const seen = `${pid}:${atMs}`;
+  if (loggedPids.has(seen)) return;
+  loggedPids.add(seen);
   if (startedBefore(pid, atMs)) adopt(pid, true);
 }
 function readObserveLog(home) {
@@ -331,7 +338,10 @@ async function runSessions(env, repo, cli, runId) {
   const origin = Date.now();
   const gap = cli.sessions <= 1 ? 0 : cli.holdMs / cli.sessions;
   const hooks = []; const sessionIds = []; const markers = [];
-  await Promise.all(Array.from({ length: cli.sessions }, async (_, s) => {
+  // Every session has to settle before the caller cleans up: `Promise.all` rejects on the first
+  // failure while the other sessions carry on spawning hooks, and those would outlive the sweep
+  // that was already tearing its home down. The first failure is still what the caller sees.
+  const settled = await Promise.allSettled(Array.from({ length: cli.sessions }, async (_, s) => {
     const wait = origin + gap * s - Date.now();
     if (wait > 0) await sleep(wait);
     const sessionId = `t042-${runId}-s${s}`;
@@ -347,6 +357,8 @@ async function runSessions(env, repo, cli, runId) {
     }
     await push('Stop', { prompt_id: `${sessionId}-stop`, stop_hook_active: false, last_assistant_message: 'done' });
   }));
+  const failure = settled.find((row) => row.status === 'rejected');
+  if (failure !== undefined) throw failure.reason;
   return { hooks, sessionIds, markers };
 }
 function holdReader(dbPath) {
@@ -591,8 +603,12 @@ function checkNotStuck(input) {
   // The run makes `observe --stop` succeed or throws, so `stopped` is the only end it demands, and
   // the sentinel it wrote must be gone: `src/worker/observe.ts` keeps a sentinel it could not
   // remove and says so in the log, and the next worker would stop on it.
+  // With no summarizer there is nothing that could process a source, so work that left `waiting`
+  // for `processed` would be work this run cannot account for, and a run that deferred nothing at
+  // all never exercised the deferral the sweep is measuring.
   const pass = input.pending === 0 && input.spoolFiles === 0 && input.liveBatches === 0
     && input.workerErrors === 0 && (input.badEnds ?? []).length === 0
+    && input.processed === 0 && input.waiting > 0
     && input.endReason === 'stopped' && input.stopMarker === false;
   return { name: 'not-stuck', pass, ...input, note: 'with preset none, work moves to waiting as deferred no_provider' };
 }
@@ -702,7 +718,7 @@ async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
   const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
-  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 1, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
+  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 0, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
   assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
   const mixed = checkRetained({ markers: [hit('miss', 'done', 0), hit('dup', 'done', 2)], sessions: sess, spoolFiles: 0 });
   assert.equal(mixed.pass, false); assert.deepEqual(mixed.missing, ['miss']); assert.deepEqual(mixed.duplicate, ['dup']);
@@ -731,6 +747,8 @@ async function selfCheck() {
   assert.equal(checkNotStuck({ ...stuckOk, badEnds: ['batch_error'] }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, stopMarker: true }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, endReason: 'idle_exit' }).pass, false);
+  assert.equal(checkNotStuck({ ...stuckOk, processed: 1 }).pass, false, 'preset none can process nothing');
+  assert.equal(checkNotStuck({ ...stuckOk, waiting: 0 }).pass, false, 'a run that deferred nothing measured no deferral');
   assert.equal(countBatchLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0, Date.now()), 0);
   assert.equal(countErrorLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0), 1);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=1 reason=batch_error\n', 0), ['batch_error']);
@@ -967,7 +985,10 @@ async function runLive(cli) {
       }
     }
   }
-  const failed = error !== undefined || logError !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
+  // A worker log that could not be saved is a run whose receipts are incomplete, not a check that
+  // failed: the evidence file calls that exit 2.
+  if (error === undefined && logError !== undefined) error = logError;
+  const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
     startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), fixture: cli.fixture,
     fixtureLines: existsSync(cli.fixture) ? readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length : 0,
@@ -986,7 +1007,8 @@ async function main(argv) {
   const cli = parseCli(argv);
   if (cli.selfCheck) { await selfCheck(); return 0; }
   const report = await runLive(cli);
-  process.stdout.write(renderMarkdown(report));
+  // The receipt is attempted first: a report that says every check passed, printed before the write
+  // that fails and sends the run to exit 2, contradicts the run it is the record of.
   let receiptError;
   if (cli.jsonOut !== undefined) {
     // A run whose receipt could not be written keeps its home, like any other failed run: deleting
@@ -994,16 +1016,24 @@ async function main(argv) {
     try {
       mkdirSync(dirname(cli.jsonOut), { recursive: true });
       writeFileSync(cli.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
-    } catch (error) { receiptError = error; report.failed = true; }
+    } catch (error) {
+      receiptError = error;
+      report.failed = true;
+      report.error = `could not write the receipt: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
+  process.stdout.write(renderMarkdown(report));
   cleanupHome(cli, report);
   if (receiptError !== undefined) throw receiptError;
   if (report.error !== undefined) return 2;
   return report.failed ? 1 : 0;
 }
+// `process.exit` would drop whatever of the Markdown receipt is still queued behind a pipe, so the
+// code is set and the loop is left to drain. Everything this run starts is settled or unref'd by
+// here, so there is nothing left to hold it open.
 try {
-  process.exit(await main(process.argv.slice(2)));
+  process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(2);
+  process.exitCode = 2;
 }
