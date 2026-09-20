@@ -15,9 +15,11 @@ import {
 import { assertLease } from '../worker/lease.js';
 import {
   MAX_BODY,
+  TRIM_MARKER,
   DISPLAY_PATH_TAIL,
   MAX_SOURCE_EVENT_IDS,
   MAX_TITLE,
+  eventParts,
   type ObserverInput,
   type ObserverOutput,
 } from './contract.js';
@@ -68,20 +70,183 @@ export function dominantScript(text: string): 'ja' | 'en' | 'other' {
 /**
  * FR-014: the observer answers in the language of the content. The caller retries once on
  * `mismatch` and routes the batch to the fallback with `language_mismatch` on the second.
+ *
+ * A field whose own script disagrees with the hint is scored on what the observer *wrote*, not on
+ * what it quoted. The prompt tells it to carry a declared exact fact character for character, so an
+ * English session recording one Japanese fact must not lose the whole batch for it — and the same
+ * field usually carries framing around the quote ("Durable fact: <the fact>"), which a whole-field
+ * comparison would still call a mismatch. Removing every run the request already carries and scoring
+ * the residual covers the framed shape, a title trimmed to its limit, a body trimmed with an
+ * omission marker, and a title reused from a nearby memory, under one rule.
+ *
+ * A field whose own script *agrees* is accepted whole and its residual is never scored, as it was
+ * before the exemption existed, so a long quotation in the hint's language carries prose in another
+ * language past the gate. That is #295, which carries the measurement a tightening needs.
  */
 export function checkLanguage(input: ObserverInput, output: ObserverOutput): 'ok' | 'mismatch' {
   // Without a dominant script in the input there is nothing to compare the answer against.
   if (input.language_hint === 'other') return 'ok';
   const fields = output.observations.flatMap((observation) => [observation.title, observation.body]);
-  if (output.checkpoint.decision === 'replace') fields.push(output.checkpoint.purpose,
-    ...output.checkpoint.constraints, ...output.checkpoint.decisions, ...output.checkpoint.outstanding);
+  // The checkpoint's own purpose is excluded from the quoting exemption below: `checkpointText`
+  // picks all four section headings from it, so a purpose that is only a foreign-language quote
+  // renders the whole checkpoint in the wrong language.
+  if (output.checkpoint.decision === 'replace') fields.push(...output.checkpoint.constraints,
+    ...output.checkpoint.decisions, ...output.checkpoint.outstanding);
+  let quoted: QuotedCorpus | null = null;
   for (const text of fields) {
-      const script = dominantScript(text);
-      // A field of paths or numbers says nothing about the language it was written in.
-      if (script === 'other') continue;
-      if (script !== input.language_hint) return 'mismatch';
+    if (scriptAgrees(text, input.language_hint)) continue;
+    quoted ??= quotedCorpus(input);
+    if (scriptAgrees(unquoted(text, quoted), input.language_hint)) continue;
+    return 'mismatch';
   }
+  if (output.checkpoint.decision === 'replace'
+    && !scriptAgrees(output.checkpoint.purpose, input.language_hint)) return 'mismatch';
   return 'ok';
+}
+
+/** A field of paths or numbers says nothing about the language it was written in. */
+function scriptAgrees(text: string, hint: 'ja' | 'en'): boolean {
+  const script = dominantScript(text);
+  return script === 'other' || script === hint;
+}
+
+/** The shortest run of the request a field may reuse without being read as the writer's own words. */
+const MIN_QUOTED_RUN = 4;
+
+
+type QuotedCorpus = { texts: string[]; grams: Set<string> };
+
+/**
+ * The strings this request carries, which is what an observation may quote. The provided checkpoint
+ * counts (the observer is told to preserve its still-applicable items, and a later batch of the same
+ * session need not carry the events they were written from), and so do the nearby memories the
+ * prompt asks it to classify against: the honest title of an `update` is the target's own.
+ *
+ * Each field stays its own string, down to the six an event holds: joining them would let a quote
+ * straddle a seam the request never wrote. `eventParts` is also where a paged fragment is decoded
+ * from its canonical JSON, and it is the only place anything is decoded.
+ *
+ * Everything is normalized with `normalizeForIdentity`, and so is the subject, because a comparison
+ * that disagrees about case or run-length whitespace answers a question nobody asked. That
+ * lowercases, which loosens the English-in-Japanese direction slightly; the containment test below
+ * is what makes it worth it, since it needs both sides in one form to mean anything.
+ */
+function quotedCorpus(input: ObserverInput): QuotedCorpus {
+  const texts = [
+    ...input.events.flatMap(eventParts),
+    ...input.nearby.flatMap((memory) => [memory.title, memory.body]),
+    ...(input.checkpoint_context.state === 'provided'
+      ? [input.checkpoint_context.title, input.checkpoint_context.body] : []),
+  ].map(normalizeForIdentity).filter((part) => part.length > 0);
+  const grams = new Set<string>();
+  for (const text of texts) {
+    for (let index = 0; index + MIN_QUOTED_RUN <= text.length; index += 1) {
+      grams.add(text.slice(index, index + MIN_QUOTED_RUN));
+    }
+  }
+  return { texts, grams };
+}
+
+/**
+ * `text` with every run of at least `MIN_QUOTED_RUN` characters that the request already carries
+ * removed. Shorter coincidences stay: a single shared character must not exempt a one-word title.
+ *
+ * Where one run ends and the next begins with nothing between them, the join is the observer's:
+ * the request carries each piece but never that sentence. Two such runs in the same script are a
+ * sentence tiled out of the request, and the second one is scored, so a field tiled out of quoted
+ * fragments cannot exempt itself whole.
+ *
+ * A junction whose script is new is the other shape: the framing the prompt asks for ("Durable
+ * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
+ * honest quote in another script. Scoring that quote would fail the field the exemption exists for,
+ * so that junction is left alone.
+ *
+ * "New" is measured against every script the chain of runs has already held, not only the run
+ * before, so an identifier quoted between two fragments of one script does not buy them the framing
+ * exemption. Nothing without a script breaks the chain — neither a quoted run of punctuation nor a
+ * separator the field inserted itself — and words of the field's own do, which is why a field that
+ * quotes twice with prose between the quotes has no junction at all. Neither has a field that is
+ * one quote.
+ */
+function unquoted(text: string, corpus: QuotedCorpus): string {
+  // The worker appends the omission marker itself, so its words are nobody's answer — unless they
+  // are the whole field, which the worker never writes: `trimBody` leaves a body under `MAX_BODY`
+  // alone, so a field that is only the marker came from the provider and is scored like any other.
+  const trimmed = text.replace(TRIM_MARKER, '');
+  const subject = normalizeForIdentity(trimmed.trim() === '' ? text : trimmed);
+  // A field the request carries whole is a quote even when it is shorter than a run: `琥珀色` is a
+  // fact somebody asked to keep verbatim, not a coincidence. One character is still a coincidence —
+  // every CJK character of a Japanese request would exempt a title made of it. Counted in code
+  // points, because a supplementary-plane character such as `𠮷` is two UTF-16 units and
+  // one coincidence.
+  if (characterCount(subject) > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
+  let residual = '';
+  let index = 0;
+  let sinceRun = '';
+  const chain = new Set<'ja' | 'en'>();
+  while (index < subject.length) {
+    const length = quotedRun(subject, index, corpus);
+    if (length === 0) {
+      // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+      // reads a lone surrogate as `other`, which agrees with every hint. Advancing by the character
+      // also keeps every later run start on a boundary.
+      const character = String.fromCodePoint(subject.codePointAt(index) ?? 0);
+      residual += character;
+      sinceRun += character;
+      index += character.length;
+      continue;
+    }
+    const run = subject.slice(index, index + length);
+    const script = dominantScript(run);
+    // Words of the field's own end the chain. Characters with no script do not: a space or a comma
+    // the field puts between two fragments joins them as surely as nothing between them would. A
+    // run of punctuation is the same case from the other side — it has no script to end a chain
+    // with, and none to join one by.
+    if (scriptRatios(sinceRun).letters > 0) chain.clear();
+    // The whole run, because one character of it is nothing to score when that character is
+    // punctuation, which `scriptAgrees` reads as `other`.
+    else if (script !== 'other' && chain.has(script)) residual += run;
+    if (script !== 'other') chain.add(script);
+    sinceRun = '';
+    index += length;
+  }
+  return residual;
+}
+
+/**
+ * How much of `subject` at `index` the request already carries, in UTF-16 units, or 0 when what is
+ * there is not a quoted run. `index` is always at the start of a character, and so is the end of
+ * what this returns.
+ */
+function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number {
+  // The n-gram set answers the common case in constant time; only a real candidate is extended. Its
+  // grams are UTF-16 units, which can only admit a candidate the character count below rejects.
+  if (!corpus.grams.has(subject.slice(index, index + MIN_QUOTED_RUN))) return 0;
+  let length = MIN_QUOTED_RUN;
+  while (index + length + 1 <= subject.length
+    && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
+  // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
+  // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with `𠮸`.
+  // The run gives that half back, so what the caller's junction keeps is a whole character. A high
+  // surrogate reads as a code point above the BMP when its low half follows and as itself when the
+  // field carries it alone; both are a run ending on half a character.
+  const last = subject.codePointAt(index + length - 1) ?? 0;
+  if (last > 0xFFFF || (last >= 0xD800 && last <= 0xDBFF)) length -= 1;
+  // Counted in characters, and after the half goes back: two supplementary characters are four
+  // UTF-16 units and still a two-character coincidence. A coincidence is not a quote, so the field
+  // keeps those characters and is scored on them, which is what the minimum is for.
+  return characterCount(subject.slice(index, index + length)) >= MIN_QUOTED_RUN ? length : 0;
+}
+
+/** How many characters `text` holds: a supplementary one is two UTF-16 units and one of them. */
+function characterCount(text: string): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    // Stepping over the low half, so the pair counts once. A half on its own counts once too.
+    if ((text.codePointAt(index) ?? 0) > 0xFFFF) index += 1;
+    count += 1;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  MAX_BODY,
   observerOutputJsonSchema,
   observerOutputSchema,
   shortenDisplayPath,
@@ -191,6 +192,41 @@ test('trimObservation keeps as much of a single long line as the budget allows',
   assert.equal(trimmed.body.length, 2000);
   assert.match(trimmed.body, /\n\.\.\. \(\+1 omitted\)$/);
   assert.ok(trimmed.body.startsWith('z'.repeat(1_983)));
+});
+
+test('trimObservation keeps content when the body opens with blank lines', () => {
+  // Cutting at the first line boundary would leave `\n... (+1 omitted)` — the marker as the whole
+  // body, with every character of content dropped. `classify.ts` also reads a field that is only
+  // the marker as the provider's own words, which only holds while the worker never writes one.
+  for (const prefix of ['\n', '  \n', '\n\n', ' \t \n', ' '.repeat(2_000) + '\n']) {
+    const trimmed = trimObservation(observation({ body: `${prefix}${'\u3042'.repeat(2_500)}` }));
+    assert.match(trimmed.body, /\n\.\.\. \(\+\d+ omitted\)$/, JSON.stringify(prefix.slice(0, 8)));
+    assert.ok(trimmed.body.includes('\u3042'), `content survives ${JSON.stringify(prefix.slice(0, 8))}`);
+    assert.ok(trimmed.body.length <= MAX_BODY, JSON.stringify(prefix.slice(0, 8)));
+  }
+});
+
+test('trimObservation keeps the indentation of the first line that has content', () => {
+  // Blank lines in front of the content are not content; the spaces that open a content line are,
+  // and a body whose exact spelling matters (indented code, a padded value) must keep them.
+  const trimmed = trimObservation(observation({ body: `\n    ${'x'.repeat(2_500)}` }));
+  assert.ok(trimmed.body.startsWith('    x'), JSON.stringify(trimmed.body.slice(0, 12)));
+});
+
+test('trimObservation keeps content the indentation would otherwise push out of the budget', () => {
+  // Indentation is content, but indentation long enough to fill the cut by itself would return an
+  // empty body and lose everything after it. The boundary is the last character the cut keeps.
+  for (const indent of [1_982, 1_983, 1_984]) {
+    const body = `\n${' '.repeat(indent)}${'x'.repeat(2_500)}`;
+    assert.ok(trimObservation(observation({ body })).body.includes('x'), `indent ${indent}`);
+  }
+});
+
+test('trimObservation returns nothing for a body that is blank all the way through', () => {
+  // The alternative is a marker that omits nothing, which `classify.ts` then scores as the
+  // provider's own English and sends a whole valid batch to the fallback.
+  assert.equal(trimObservation(observation({ body: ' '.repeat(2_500) })).body, '');
+  assert.equal(trimObservation(observation({ body: '\n'.repeat(2_500) })).body, '');
 });
 
 test('validateObserverOutput trims an oversized body and title instead of refusing the batch', () => {

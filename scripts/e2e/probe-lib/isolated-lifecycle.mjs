@@ -685,7 +685,7 @@ async function seedLifecycle(agent, context) {
   const observe = await runObserver(repo, root, oboeteHome, options, dependencies);
   if (![0, 1].includes(observe.exitCode)) throw new Error(`Oboete observe exited ${observe.exitCode}.`);
   const search = await waitForSummary(repo, path.join(root, "search"), facts, options, dependencies, observerEnv);
-  if (!search.found) throw new Error("The seed summary was not found.");
+  if (!search.found) throw new Error(`Seeded facts are not retrievable: ${search.missingFacts.join(", ")}.`);
 
   const snapshot = prepareLifecycleParent(oboeteHome, agent, dependencies, repo);
   // S1 owns the facts. S2 receives them only through its startup pack, so lifecycle actions
@@ -708,12 +708,27 @@ async function seedLifecycle(agent, context) {
 function lifecycleEvidence(root, legs) {
   const evidence = {};
   for (const stream of ["stdout", "stderr"]) {
-    const paths = Object.fromEntries(legs.map((leg) => [
-      leg, path.join(root, path.basename(leg) === "observe" ? `${leg}.${stream}.txt` : `${leg}/${stream}.txt`),
-    ]).filter(([, file]) => fs.existsSync(file)));
+    const paths = Object.fromEntries(legs.map((leg) => [leg, legStream(root, leg, stream)])
+      .filter(([, file]) => fs.existsSync(file)));
     if (Object.keys(paths).length > 0) evidence[stream] = paths;
   }
   return evidence;
+}
+
+/**
+ * The file a leg wrote one stream to. A leg that runs one command per fact writes one file per fact
+ * rather than a single `stdout.txt`, because each run would otherwise overwrite the one before it;
+ * the report links the first of them, and the rest sit beside it in the same directory.
+ */
+export function legStream(root, leg, stream) {
+  const directory = path.join(root, leg);
+  // The per-fact files win over `<leg>/<stream>.txt`, which a reused run directory can still hold
+  // from a run that wrote one file for the whole pass: nothing updates that file now, so linking it
+  // would point the report at an older run's evidence.
+  const parts = fs.existsSync(directory)
+    ? fs.readdirSync(directory).filter((name) => name.endsWith(`.${stream}.txt`)).sort() : [];
+  if (parts.length > 0) return path.join(directory, parts[0]);
+  return path.join(root, path.basename(leg) === "observe" ? `${leg}.${stream}.txt` : `${leg}/${stream}.txt`);
 }
 
 function recordLifecycleSeedFailure(agent, context, error) {
