@@ -71,12 +71,12 @@ function loadAverage() { try { return readFileSync('/proc/loadavg', 'utf8').trim
 // as zero would read as a WAL the checkpoint had recycled.
 function missing(error) { return error?.code === 'ENOENT'; }
 function fileBytes(path) {
-  try { return statSync(path).size; } catch (error) { if (missing(error)) return 0; throw error; }
+  try { return statSync(path).size; } catch (error) { if (missing(error)) { return 0; } throw error; }
 }
 function spoolCount(dir) {
   try {
     return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')).length;
-  } catch (error) { if (missing(error)) return 0; throw error; }
+  } catch (error) { if (missing(error)) { return 0; } throw error; }
 }
 function isBusy(error) {
   if (error === null || typeof error !== 'object') return false;
@@ -179,7 +179,7 @@ function startSampler(paths, sink, stageOf) {
   const timer = setInterval(guarded, SAMPLE_MS);
   let stopped = false;
   return {
-    stop() { if (stopped) return; stopped = true; clearInterval(timer); guarded(); },
+    stop() { if (stopped) { return; } stopped = true; clearInterval(timer); guarded(); },
     failure() { return failure; },
   };
 }
