@@ -245,10 +245,11 @@ export function eventParts(event: ObserverInput['events'][number]): string[] {
   // `unquoted`'s whole-containment rule: measured on #278, `mcp:serena/read_file` in the corpus let a
   // title of `Read` pass a `ja` check, and `MCP_TOOL_NAME_PATTERN` puts no bound on the tool half,
   // which the server supplies as free text. Leaving it out of this list is not the whole guard: a
-  // `fragment` is a slice of the event's canonical JSON, whose keys are sorted, and `tool_name`
-  // sorts last, so the final page of an oversized event carries it whatever this list says. Nor
-  // would keeping it out suffice — the exemption is a substring test, so any four-character Latin
-  // run the request holds does the same job. Both are #291, whose fix is a token boundary in
+  // `fragment` is a slice of the event's canonical JSON, so whichever page reaches the tail carries
+  // `tool_name` whatever this list says — which page that is depends on where the budget falls, and
+  // a name long enough arrives split across two. Nor would keeping it out suffice: the exemption is
+  // a substring test, so any four-character Latin run the request holds does the same job, the
+  // serialization's own keys included. All of it is #291, whose fix is a token boundary in
   // `unquoted` rather than a narrower filter here.
   const fragment = event.fragment?.text;
   return [event.text, event.output, event.error, input?.command, input?.text, ...paths]

@@ -285,20 +285,23 @@ test("a tool call's own name is not a quote, so it cannot exempt an English titl
   assert.equal(eventParts(observerInputSchema.shape.events.element.parse(untooled)).length, 0);
 });
 
-test('the last page of a tool call carries its name, and the name exempts a title (#291)', () => {
+test('a page that reaches a tool call\'s tail carries its name, and the name exempts a title (#291)', () => {
   // `fitFragment` slices `canonicalJson(event)`, which serializes the whole event with its keys
-  // sorted, and `tool_name` sorts last: the final page of an oversized tool call carries it, and
-  // `decodeFragment` returns its value as a run of its own. The filter above never sees it.
+  // sorted, and `tool_name` sorts last, so a page that reaches the tail carries it and
+  // `decodeFragment` returns its value as a run of its own. The filter above never sees it. Which
+  // page that is depends on where the budget falls: a last page can be as little as `}`.
   // A fragment is the only event of its request (`request.ts` closes the page after one), and the
   // hint is derived from what is sent rather than given, so both are that way here.
-  // Over `MAX_INPUT_CHARS`, because an event that fits is sent whole and never paged at all.
+  // Over `MAX_INPUT_CHARS` (12,000), because an event that fits is sent whole and never paged at
+  // all, and under `MAX_TOOL_INPUT_TEXT` (20,000), because a longer `input.text` is not a value a
+  // normalized event carries.
   const page = pagedEvent(
     { id: 'e1', kind: 'tool_call', captured_at: NOW,
-      input: { paths: [], text: '配布の設定を確認しました。'.repeat(2_000) },
+      input: { paths: [], text: '配布の設定を確認しました。'.repeat(1_000) },
       tool_name: 'mcp:serena/read_file' },
     (canonical) => canonical.slice(canonical.length - 300));
-  assert.ok(page.fragment!.text.endsWith('"mcp:serena/read_file"}'), 'this is the last-page shape');
-  // Whole, because this name fits in one page. `fitFragment` cuts wherever the budget falls, so a
+  assert.ok(page.fragment!.text.endsWith('"mcp:serena/read_file"}'), 'this page reaches the tail');
+  // Whole, because this name fits in this page. `fitFragment` cuts wherever the budget falls, so a
   // long enough name arrives split and only its tail is a run; the exemption does not need the
   // whole name either way.
   assert.ok(eventParts(page).includes('mcp:serena/read_file'));
@@ -307,7 +310,7 @@ test('the last page of a tool call carries its name, and the name exempts a titl
   // Keeping the name out of `eventParts` is not what closes this: the exemption is a substring
   // test, so any four-character Latin run the request carries — `read` inside a path, a command or
   // an English sentence — exempts a title of `Read` just the same (#291, measured). The first
-  // assertion is a fact about the last page that no filter here changes; this one is the gap, and
+  // assertion is a fact about the tail page that no filter here changes; this one is the gap, and
   // it is the one that flips when #291 lands.
   const titled = output(observation({ title: 'Read', body: 'Read' }));
   assert.equal(checkLanguage(inputWithHint(hint, [page]), titled), 'ok');
