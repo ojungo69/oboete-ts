@@ -350,18 +350,21 @@ function summaryFixture(t, name, rowsFor) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `oboete-summary-${name}-`));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const searched = [];
+  const paths = [];
   let clock = 0;
   return {
     root,
     searched,
+    paths,
     dependencies: {
       now: () => clock,
       sleep: async () => {
         clock += 1_000;
       },
-      runTimed: async (argv) => {
+      runTimed: async (argv, options) => {
         const fact = argv[2];
         searched.push(fact);
+        paths.push(options.stdoutPath);
         return { exitCode: 0, stdout: JSON.stringify({ memories: rowsFor(fact) }), stderr: "" };
       },
     },
@@ -375,6 +378,9 @@ test("waitForSummary accepts one memory per fact and searches for each", async (
     { timeoutMs: 30_000 }, fixture.dependencies, {});
   assert.deepEqual(result, { found: true, attempts: 1, missingFacts: [] });
   assert.deepEqual(fixture.searched, facts, "every fact is searched for on its own");
+  // `runTimed` opens its output files with "w", so one path for the pass would leave only the last
+  // fact's result behind — the evidence the recall claim is audited from.
+  assert.equal(new Set(fixture.paths).size, facts.length, "each fact keeps its own search output");
 });
 
 test("waitForSummary still accepts one memory holding every fact", async (t) => {

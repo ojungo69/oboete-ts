@@ -339,11 +339,15 @@ async function searchPass(missing, found, context) {
   for (const fact of missing) {
     const remaining = context.deadline - context.dependencies.now();
     if (remaining <= 0) return true;
+    // One pair of files per fact: `runTimed` opens them with "w", so searching every fact into one
+    // pair would leave the last fact's output as the whole record of a pass that claims all of them.
+    // A fact keeps its slot across attempts, and a fact already found is not searched for again.
+    const slot = context.facts.indexOf(fact);
     const result = await context.dependencies.runTimed(["oboete", "search", fact, "--json"], {
       cwd: context.repo,
       env: context.env,
-      stdoutPath: context.stdoutPath,
-      stderrPath: context.stderrPath,
+      stdoutPath: path.join(context.directory, `search-${slot}.stdout.txt`),
+      stderrPath: path.join(context.directory, `search-${slot}.stderr.txt`),
       timeoutMs: Math.min(15_000, remaining),
     });
     if (result.exitCode === 3) return false;
@@ -358,9 +362,9 @@ export async function waitForSummary(repo, directory, facts, options, dependenci
     repo,
     env,
     dependencies,
+    directory,
+    facts,
     deadline: dependencies.now() + options.timeoutMs,
-    stdoutPath: path.join(directory, "stdout.txt"),
-    stderrPath: path.join(directory, "stderr.txt"),
   };
   let attempts = 0;
   const found = new Set();

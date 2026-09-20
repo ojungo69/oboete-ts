@@ -708,12 +708,25 @@ async function seedLifecycle(agent, context) {
 function lifecycleEvidence(root, legs) {
   const evidence = {};
   for (const stream of ["stdout", "stderr"]) {
-    const paths = Object.fromEntries(legs.map((leg) => [
-      leg, path.join(root, path.basename(leg) === "observe" ? `${leg}.${stream}.txt` : `${leg}/${stream}.txt`),
-    ]).filter(([, file]) => fs.existsSync(file)));
+    const paths = Object.fromEntries(legs.map((leg) => [leg, legStream(root, leg, stream)])
+      .filter(([, file]) => fs.existsSync(file)));
     if (Object.keys(paths).length > 0) evidence[stream] = paths;
   }
   return evidence;
+}
+
+/**
+ * The file a leg wrote one stream to. A leg that runs one command per fact writes one file per fact
+ * rather than a single `stdout.txt`, because each run would otherwise overwrite the one before it;
+ * the report links the first of them, and the rest sit beside it in the same directory.
+ */
+function legStream(root, leg, stream) {
+  const direct = path.join(root, path.basename(leg) === "observe" ? `${leg}.${stream}.txt` : `${leg}/${stream}.txt`);
+  if (fs.existsSync(direct)) return direct;
+  const directory = path.join(root, leg);
+  const parts = fs.existsSync(directory)
+    ? fs.readdirSync(directory).filter((name) => name.endsWith(`.${stream}.txt`)).sort() : [];
+  return parts.length > 0 ? path.join(directory, parts[0]) : direct;
 }
 
 function recordLifecycleSeedFailure(agent, context, error) {
