@@ -27,7 +27,6 @@ const childPeaks = [];
 let rssDir;
 let rssSeq = 0;
 const loggedPids = new Set();
-const spawnedGroups = new Set();
 const WORKER_LOG_LAG_MS = 60_000;
 let bootAt;
 class HarnessError extends Error { constructor(message) { super(message); this.name = 'HarnessError'; } }
@@ -122,7 +121,6 @@ function adopt(pid, observe, group = false) {
   const ident = procIdent(pid);
   if (ident === null) return;
   ownPids.set(pid, { ident, observe, group });
-  if (group) spawnedGroups.add(pid);
 }
 // A worker pid is taken from the log once. The line stays in the log after that process ends, and a
 // pid carrying that number later belongs to somebody else.
@@ -228,9 +226,13 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     child.on('close', (status, signal) => {
       clearTimeout(timer);
       const hwmKb = readRss(rssFile);
-      // A group id is free for reuse the moment the group empties, so an ended group is forgotten
-      // here rather than carried to cleanup, where it would name whatever took the number next.
-      if (child.pid !== undefined && !groupAlive(child.pid)) spawnedGroups.delete(child.pid);
+      // A group id is free for reuse the moment the group empties, so no group outlives its leader
+      // here. In the rare case where the command survived the wrapper, its processes are taken by
+      // pid, with their own start times, and cleanup signals those instead of a number.
+      if (child.pid !== undefined) {
+        if (groupAlive(child.pid)) for (const member of groupMembers(child.pid)) adopt(member, false);
+        ownPids.delete(child.pid);
+      }
       childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb });
       resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb, pid: child.pid, ms: Date.now() - t0 });
     });
@@ -392,36 +394,40 @@ async function waitGone(home, dbPath, timeoutMs) {
   }
   throw new HarnessError(`timed out waiting for home processes to exit and worker_lease to have no live owner after observe --stop; leftover=${pidsInHome(home).join('|') || 'none'}`);
 }
-// Signal 0 to a group id succeeds while any member is left, which is how a wrapper whose command
-// outlived it is still found after the wrapper itself is gone. A group that has never been seen
-// empty cannot have been renumbered: the kernel holds the id while the group has members.
+// Signal 0 to a group id succeeds while any member is left.
 function groupAlive(pid) {
   try { process.kill(-pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
 }
+// Field 5 of /proc/<pid>/stat is the process group. Reading it names the members of a group this
+// run created; it is the same world-readable line the start time comes from, never an environment.
+function groupMembers(pgid) {
+  const members = [];
+  let names = [];
+  try { names = readdirSync('/proc'); } catch { return members; }
+  for (const name of names) {
+    if (!/^[0-9]+$/.test(name)) continue;
+    let text = '';
+    try { text = readFileSync(`/proc/${name}/stat`, 'utf8'); } catch { continue; }
+    if (Number(text.slice(text.lastIndexOf(')') + 1).trim().split(' ')[2]) === pgid) members.push(Number(name));
+  }
+  return members;
+}
 async function stopHomeProcesses(home) {
-  // Each child of this harness leads its own group, and the command runs inside it: signalling the
-  // pid alone would end the /usr/bin/time wrapper and leave the product's process running. A worker
-  // the log named is not this process's child, so it is signalled by pid, its identity read again
-  // between the listing and the signal.
-  const signalGroups = (signal) => {
-    for (const pid of [...spawnedGroups]) {
-      if (!groupAlive(pid)) { spawnedGroups.delete(pid); continue; }
-      try { process.kill(-pid, signal); } catch { spawnedGroups.delete(pid); }
-    }
-  };
-  const signalLogged = (signal) => {
+  // A child of this harness leads its own group and the command runs inside it, so signalling the
+  // pid alone would end the /usr/bin/time wrapper and leave the product's process running. The
+  // group is used only while its leader is alive, which is what proves the id is still this run's;
+  // everything else - a worker the log named, a command that outlived its wrapper - is signalled by
+  // pid, with its identity read again between the listing and the signal.
+  const signalAll = (signal) => {
     for (const { pid, ident, group } of homeProcesses(home)) {
-      if (group || procIdent(pid) !== ident) continue;
-      try { process.kill(pid, signal); } catch { /* gone */ }
+      if (procIdent(pid) !== ident) continue;
+      try { process.kill(group ? -pid : pid, signal); } catch { /* gone */ }
     }
   };
-  const left = () => [...spawnedGroups].filter((pid) => groupAlive(pid)).length + homeProcesses(home).filter((p) => !p.group).length;
-  signalGroups('SIGTERM');
-  signalLogged('SIGTERM');
+  signalAll('SIGTERM');
   const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline && left() > 0) await sleep(100);
-  signalGroups('SIGKILL');
-  signalLogged('SIGKILL');
+  while (Date.now() < deadline && homeProcesses(home).length > 0) await sleep(100);
+  signalAll('SIGKILL');
 }
 // The sweep measures the cost of holding retained history, so losing that history - through
 // src/worker/purge.ts or anything else - must fail rather than look like a cheaper run.
@@ -512,7 +518,9 @@ function checkRss(input) {
 // reached only the leader, an aborted run would leave the command behind.
 async function groupKillCheck() {
   if (!existsSync(TIME_BIN)) return;
-  const rssFile = join(tmpdir(), `oboete-t042-selfcheck-${process.pid}.txt`);
+  const scratch = mkdtempSync(join(tmpdir(), 'oboete-t042-selfcheck-'));
+  rssDir = scratch;
+  const rssFile = join(scratch, 'wrapper.txt');
   const child = spawn(TIME_BIN, ['-f', '%M', '-o', rssFile, '--', process.execPath, '-e', 'setInterval(() => {}, 1_000);'], { detached: true, stdio: 'ignore' });
   try {
     await sleep(500);
@@ -526,11 +534,11 @@ async function groupKillCheck() {
     const quick = await spawnWait(process.execPath, ['-e', 'process.exit(0);'], { env: process.env, cwd: ROOT, timeoutMs: 10_000 });
     assert.equal(quick.status, 0);
     assert.ok(quick.hwmKb > 0, 'the wrapper reports the peak of the command it ran');
-    assert.equal(spawnedGroups.has(quick.pid), false);
+    assert.deepEqual(pidsInHome(scratch), [], 'a child that ended leaves nothing for cleanup to signal');
   } finally {
     killGroup(child, 'SIGKILL');
-    spawnedGroups.clear();
-    rmSync(rssFile, { force: true });
+    rssDir = undefined;
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 async function selfCheck() {
