@@ -177,10 +177,20 @@ function startSampler(paths, sink, stageOf) {
   };
   tick();
   const timer = setInterval(guarded, SAMPLE_MS);
+  let stopped = false;
   return {
-    stop() { clearInterval(timer); guarded(); },
+    stop() { if (stopped) return; stopped = true; clearInterval(timer); guarded(); },
     failure() { return failure; },
   };
+}
+// The final sample is taken by `stop`, so it is the one a caller reading `failure` before stopping
+// would miss: the run would report gates computed over samples that end early and say nothing.
+function finishSampling(sampler) {
+  sampler.stop();
+  const failure = sampler.failure();
+  if (failure !== undefined) {
+    throw new HarnessError(`sampling stopped: ${failure instanceof Error ? failure.message : String(failure)}`);
+  }
 }
 function median(values) {
   if (values.length === 0) return 0;
@@ -641,6 +651,21 @@ async function groupKillCheck() {
     await sleep(600);
     sampler.stop();
     assert.match(String(sampler.failure()?.message), /sampler tick failed/);
+    // A failure only the final tick produces is the one `finishSampling` exists for, and stopping
+    // twice must not take a second one.
+    const sink = [];
+    const finalOnly = startSampler({ oboeteHome: scratch, db: join(scratch, 'plain'), spool: join(scratch, 'spool') }, sink, () => 'final');
+    finalOnly.stop();
+    const taken = sink.length;
+    finalOnly.stop();
+    assert.equal(sink.length, taken, 'stopping a sampler twice takes one final sample');
+    let finalTicks = 0;
+    const lastFails = startSampler({ oboeteHome: scratch, db: join(scratch, 'plain'), spool: join(scratch, 'spool') }, [], () => {
+      finalTicks += 1;
+      if (finalTicks > 1) throw new Error('final sample failed');
+      return 'final';
+    });
+    assert.throws(() => finishSampling(lastFails), /sampling stopped: final sample failed/);
     // The same command under spawnWait: its timeout must end it and the call must come back.
     const timedOutRun = await spawnWait(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000);"], { env: process.env, cwd: ROOT, timeoutMs: 1_000 });
     assert.equal(timedOutRun.timedOut, true, 'a command that ignores SIGTERM still ends its own call');
@@ -822,10 +847,7 @@ async function phaseB(cli, paths, env, runId, samples) {
     if (batchesHeld === 0) throw new HarnessError('held reader never overlapped a worker batch');
     const held = samples.filter((s) => s.stage === 'hold');
     if (!held.some((s) => s.processes.some((p) => p.observe))) throw new HarnessError('no worker process of this home was sampled while the reader was held');
-    const sampling = sampler.failure();
-    if (sampling !== undefined) {
-      throw new HarnessError(`sampling stopped: ${sampling instanceof Error ? sampling.message : String(sampling)}`);
-    }
+    finishSampling(sampler);
     const walStart = held[0]?.walBytes ?? 0;
     const walFinal = fileBytes(`${paths.db}-wal`);
     return {
@@ -898,7 +920,9 @@ async function runLive(cli) {
     error = err instanceof HarnessError ? message : `unexpected ${name}: ${message}`;
     process.stderr.write(`${error}\n`);
   } finally {
-    if (isolation !== undefined) {
+    // `isolation` is the directory to keep and report; `paths` is what there is to stop and save,
+    // and a setup that failed part way through has the first without the second.
+    if (paths !== undefined) {
       await stopHomeProcesses(paths.oboeteHome);
       try { copyObserveLog(paths.oboeteHome, cli.jsonOut); } catch (err) {
         logError = `could not save the worker log beside --json-out: ${err instanceof Error ? err.message : String(err)}`;
