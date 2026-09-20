@@ -201,9 +201,18 @@ function readRss(path) {
   return parseRss(text);
 }
 // The child leads its own process group, so a timeout reaches the command and not just the wrapper.
-function killGroup(child, signal) {
+// The leader's start time is read again first: once the leader is gone the number is not proof of
+// anything, and the group's survivors are tracked by pid instead.
+function killGroup(child, signal, ident) {
   if (child.pid === undefined) return;
+  if (ident !== undefined && procIdent(child.pid) !== ident) return;
   try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } }
+}
+// Takes the processes still in a group this run created, by pid and start time, so they can be
+// stopped after the leader is gone.
+function adoptMembers(pgid) {
+  if (!groupAlive(pgid)) return;
+  for (const member of groupMembers(pgid)) { if (member !== pgid) adopt(member, false); }
 }
 function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
   const t0 = Date.now();
@@ -214,25 +223,34 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
       cwd, env, detached: true, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     adopt(child.pid, false, true);
-    let stdout = ''; let stderr = ''; let timedOut = false;
+    const leader = procIdent(child.pid ?? 0);
+    let stdout = ''; let stderr = ''; let timedOut = false; let hardTimer;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => { stderr += chunk; if (inheritStderr === true) process.stderr.write(chunk); });
-    const timer = setTimeout(() => { timedOut = true; killGroup(child, 'SIGTERM'); setTimeout(() => killGroup(child, 'SIGKILL'), 2_000).unref(); }, timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      adoptMembers(child.pid ?? 0);
+      killGroup(child, 'SIGTERM', leader);
+      hardTimer = setTimeout(() => { adoptMembers(child.pid ?? 0); killGroup(child, 'SIGKILL', leader); }, 2_000);
+      hardTimer.unref();
+    }, timeoutMs);
+    child.on('error', (error) => { clearTimeout(timer); clearTimeout(hardTimer); reject(error); });
+    // `exit` fires when the process ends; `close` waits for the pipes, which a command that
+    // outlives its wrapper can hold open. The survivors are taken here, while the group is still
+    // named by a leader this run started.
+    child.on('exit', () => {
+      if (child.pid === undefined) return;
+      adoptMembers(child.pid);
+      ownPids.delete(child.pid);
+    });
     child.stdin?.on('error', () => {});
     if (stdin !== undefined) child.stdin?.end(stdin);
     child.on('close', (status, signal) => {
       clearTimeout(timer);
+      clearTimeout(hardTimer);
       const hwmKb = readRss(rssFile);
-      // A group id is free for reuse the moment the group empties, so no group outlives its leader
-      // here. In the rare case where the command survived the wrapper, its processes are taken by
-      // pid, with their own start times, and cleanup signals those instead of a number.
-      if (child.pid !== undefined) {
-        if (groupAlive(child.pid)) for (const member of groupMembers(child.pid)) adopt(member, false);
-        ownPids.delete(child.pid);
-      }
       childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb });
       resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb, pid: child.pid, ms: Date.now() - t0 });
     });
@@ -419,6 +437,9 @@ async function stopHomeProcesses(home) {
   // everything else - a worker the log named, a command that outlived its wrapper - is signalled by
   // pid, with its identity read again between the listing and the signal.
   const signalAll = (signal) => {
+    // Members first: a wrapper that dies on the signal would otherwise take the only handle on a
+    // command that ignored it.
+    for (const { pid, group } of homeProcesses(home)) { if (group) adoptMembers(pid); }
     for (const { pid, ident, group } of homeProcesses(home)) {
       if (procIdent(pid) !== ident) continue;
       try { process.kill(group ? -pid : pid, signal); } catch { /* gone */ }
@@ -535,6 +556,17 @@ async function groupKillCheck() {
     assert.equal(quick.status, 0);
     assert.ok(quick.hwmKb > 0, 'the wrapper reports the peak of the command it ran');
     assert.deepEqual(pidsInHome(scratch), [], 'a child that ended leaves nothing for cleanup to signal');
+    // A command that ignores SIGTERM keeps `close` from firing once its wrapper is gone: cleanup
+    // has to have taken it by pid before the signal, and has to escalate.
+    const stubborn = spawn(TIME_BIN, ['-f', '%M', '-o', join(scratch, 'stubborn.txt'), '--', process.execPath, '-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000);"], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    adopt(stubborn.pid, false, true);
+    await sleep(500);
+    const held = groupMembers(stubborn.pid).filter((pid) => pid !== stubborn.pid);
+    assert.ok(held.length > 0, 'the stubborn command is in the wrapper group');
+    await stopHomeProcesses(scratch);
+    // SIGKILL is delivered, not awaited: the entry stays until whoever is left reaps it.
+    for (let i = 0; i < 20 && existsSync(`/proc/${held[0]}`); i += 1) await sleep(100);
+    assert.equal(existsSync(`/proc/${held[0]}`), false, 'cleanup ends a command that ignored SIGTERM');
   } finally {
     killGroup(child, 'SIGKILL');
     rssDir = undefined;
