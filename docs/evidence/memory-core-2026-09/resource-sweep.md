@@ -70,8 +70,9 @@ Reported, not gated:
 - no phase B hook ran over 300 ms in this run. Other runs of this harness produced one to three
   hooks between 1.3 s and 3.2 s while everything else stayed under 300 ms; it did not reproduce
   here, the cause is not isolated, and hook cold start is tracked in #210.
-- every hook runs under `/usr/bin/time`, so the hook durations above carry that wrapper's own
-  startup.
+- the phase B hook durations carry the `/usr/bin/time` wrapper's own startup, because the harness
+  spawns those hooks itself. The phase A capture numbers do not: the replay is wrapped, but it times
+  its hooks from inside.
 
 ## What this run cannot say
 

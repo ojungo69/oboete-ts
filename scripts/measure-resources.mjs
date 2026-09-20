@@ -27,6 +27,7 @@ const childPeaks = [];
 let rssDir;
 let rssSeq = 0;
 const loggedPids = new Set();
+const spawnedGroups = new Set();
 const WORKER_LOG_LAG_MS = 60_000;
 let bootAt;
 class HarnessError extends Error { constructor(message) { super(message); this.name = 'HarnessError'; } }
@@ -116,11 +117,12 @@ function procIdent(pid) {
   // different start time, so a remembered pid never resolves to somebody else's process.
   return text.slice(close + 1).trim().split(' ')[19] ?? null;
 }
-function adopt(pid, observe) {
+function adopt(pid, observe, group = false) {
   if (!Number.isInteger(pid) || pid <= 0) return;
   const ident = procIdent(pid);
   if (ident === null) return;
-  ownPids.set(pid, { ident, observe });
+  ownPids.set(pid, { ident, observe, group });
+  if (group) spawnedGroups.add(pid);
 }
 // A worker pid is taken from the log once. The line stays in the log after that process ends, and a
 // pid carrying that number later belongs to somebody else.
@@ -139,7 +141,7 @@ function homeProcesses(home) {
   for (const run of workerPidsFrom(readObserveLog(home))) adoptLogged(run.pid, run.at);
   const live = [];
   for (const [pid, info] of ownPids) {
-    if (procIdent(pid) === info.ident) live.push({ pid, ident: info.ident, observe: info.observe });
+    if (procIdent(pid) === info.ident) live.push({ pid, ident: info.ident, observe: info.observe, group: info.group === true });
     else ownPids.delete(pid);
   }
   return live;
@@ -213,7 +215,7 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     const child = spawn(TIME_BIN, ['-f', '%M', '-o', rssFile, '--', file, ...args], {
       cwd, env, detached: true, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    adopt(child.pid, false);
+    adopt(child.pid, false, true);
     let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
@@ -387,19 +389,35 @@ async function waitGone(home, dbPath, timeoutMs) {
   }
   throw new HarnessError(`timed out waiting for home processes to exit and worker_lease to have no live owner after observe --stop; leftover=${pidsInHome(home).join('|') || 'none'}`);
 }
+// Signal 0 to a group id succeeds while any member is left, which is how a wrapper whose command
+// outlived it is still found after the wrapper itself is gone.
+function groupAlive(pid) {
+  try { process.kill(-pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+}
 async function stopHomeProcesses(home) {
-  // The identity is read again between the listing and the signal: a pid that ended in between is
-  // somebody else's by the time the signal would land.
-  const signalAll = (signal) => {
-    for (const { pid, ident } of homeProcesses(home)) {
-      if (procIdent(pid) !== ident) continue;
+  // Each child of this harness leads its own group, and the command runs inside it: signalling the
+  // pid alone would end the /usr/bin/time wrapper and leave the product's process running. A worker
+  // the log named is not this process's child, so it is signalled by pid, its identity read again
+  // between the listing and the signal.
+  const signalGroups = (signal) => {
+    for (const pid of [...spawnedGroups]) {
+      if (!groupAlive(pid)) { spawnedGroups.delete(pid); continue; }
+      try { process.kill(-pid, signal); } catch { spawnedGroups.delete(pid); }
+    }
+  };
+  const signalLogged = (signal) => {
+    for (const { pid, ident, group } of homeProcesses(home)) {
+      if (group || procIdent(pid) !== ident) continue;
       try { process.kill(pid, signal); } catch { /* gone */ }
     }
   };
-  signalAll('SIGTERM');
+  const left = () => [...spawnedGroups].filter((pid) => groupAlive(pid)).length + homeProcesses(home).filter((p) => !p.group).length;
+  signalGroups('SIGTERM');
+  signalLogged('SIGTERM');
   const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline && pidsInHome(home).length > 0) await sleep(100);
-  signalAll('SIGKILL');
+  while (Date.now() < deadline && left() > 0) await sleep(100);
+  signalGroups('SIGKILL');
+  signalLogged('SIGKILL');
 }
 // The sweep measures the cost of holding retained history, so losing that history - through
 // src/worker/purge.ts or anything else - must fail rather than look like a cheaper run.
@@ -486,7 +504,23 @@ function checkRss(input) {
     note: "20-second window cannot show long-run growth; that is issue #268's seven-day run",
   };
 }
-function selfCheck() {
+// The wrapper is the group leader and the product's command runs inside that group; if a signal
+// reached only the leader, an aborted run would leave the command behind.
+async function groupKillCheck() {
+  if (!existsSync(TIME_BIN)) return;
+  const rssFile = join(tmpdir(), `oboete-t042-selfcheck-${process.pid}.txt`);
+  const child = spawn(TIME_BIN, ['-f', '%M', '-o', rssFile, '--', process.execPath, '-e', 'setInterval(() => {}, 1_000);'], { detached: true, stdio: 'ignore' });
+  try {
+    await sleep(500);
+    const inner = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8').trim().split(/\s+/).filter((part) => part !== '').map(Number);
+    assert.ok(inner.length > 0, 'the wrapper runs the command as its child');
+    killGroup(child, 'SIGKILL');
+    await sleep(500);
+    assert.equal(existsSync(`/proc/${inner[0]}`), false);
+    assert.equal(groupAlive(child.pid), false);
+  } finally { rmSync(rssFile, { force: true }); }
+}
+async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
   const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
@@ -535,6 +569,7 @@ function selfCheck() {
   assert.equal(parseRss('123456\n'), 123456);
   assert.equal(parseRss('Command terminated by signal 15\n99\n'), 99);
   assert.equal(parseRss(''), 0);
+  await groupKillCheck();
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
   assert.equal((('kept home=/h repo=/tmp/oboete-t068-repo-abc\n').match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1], '/tmp/oboete-t068-repo-abc');
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
@@ -728,7 +763,7 @@ function cleanupHome(cli, report) {
 }
 async function main(argv) {
   const cli = parseCli(argv);
-  if (cli.selfCheck) { selfCheck(); return 0; }
+  if (cli.selfCheck) { await selfCheck(); return 0; }
   const report = await runLive(cli);
   process.stdout.write(renderMarkdown(report));
   if (cli.jsonOut !== undefined) {
