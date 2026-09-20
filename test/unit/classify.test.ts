@@ -427,6 +427,31 @@ test('two quoted fragments of the same script are a sentence the observer compos
   assert.equal(checkLanguage(inputWithHint('en', events), tiled), 'mismatch');
 });
 
+test('the separator two runs join on does not exempt the sentence they make (#298)', () => {
+  // The repro of #298: the junction falls on a space, which has no script, and the field is an
+  // English sentence assembled out of two Japanese-batch events.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: '\u8a2d\u5b9a\u3092\u78ba\u8a8d\u3057\u307e\u3057\u305f\u3002\u30ed\u30b0\u306b\u306f "rotate the deployment key" \u3068\u51fa\u3066\u3044\u307e\u3059\u3002' },
+    { id: 'e2', kind: 'prompt', text: '\u518d\u8a66\u884c\u306e\u8a18\u9332: " every monday morning" \u3068\u66f8\u304b\u308c\u3066\u3044\u307e\u3059\u3002' },
+  ];
+  const assembled = output(observation({
+    title: '\u8a18\u9332', body: 'rotate the deployment key every monday morning',
+  }));
+  assert.equal(checkLanguage(inputWithHint('ja', events), assembled), 'mismatch');
+});
+
+test('a run of punctuation between two quoted fragments does not break the tiling', () => {
+  // The separator has no script of its own, so it must not read as the change of script that marks
+  // framing: the two Japanese fragments on either side are still a sentence nobody wrote.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'one field holds \u65e5\u672c\u8a9e\u6587 here' },
+    { id: 'e2', kind: 'prompt', text: 'another holds ---- as a rule' },
+    { id: 'e3', kind: 'prompt', text: 'and a third holds \u914d\u5e03\u7269\u8a2d\u5b9a today' },
+  ];
+  const joined = output(observation({ title: 'Record', body: '\u65e5\u672c\u8a9e\u6587----\u914d\u5e03\u7269\u8a2d\u5b9a' }));
+  assert.equal(checkLanguage(inputWithHint('en', events), joined), 'mismatch');
+});
+
 test('an honest quote keeps its exemption when the framing in front of it matches a run', () => {
   // The prompt asks for framing around a declared fact, and the framing can match a run of the
   // request on its own, which puts a junction in front of the quote. The field kept words of its

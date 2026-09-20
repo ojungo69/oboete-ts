@@ -158,7 +158,8 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  *
  * A junction that changes script is the other shape: the framing the prompt asks for ("Durable
  * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
- * honest quote in another script. Scoring that quote would fail the field the exemption exists for,
+ * honest quote in another script. A run of punctuation changes nothing, since it has no script of
+ * its own; the junction after it is compared against the last run that had one. Scoring that quote would fail the field the exemption exists for,
  * so that junction is left alone. A field that quotes twice with words of its own between them has
  * no junction either, and neither has a field that is one quote.
  */
@@ -177,7 +178,7 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   let residual = '';
   let index = 0;
   let previousRunEnd = -1;
-  let previousRun = '';
+  let previousScript: 'ja' | 'en' | 'other' = 'other';
   while (index < subject.length) {
     const length = quotedRun(subject, index, corpus);
     if (length === 0) {
@@ -190,12 +191,15 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       continue;
     }
     const run = subject.slice(index, index + length);
+    const script = dominantScript(run);
     // The whole run, because one character of it is nothing to score when that character is
     // punctuation, which `scriptAgrees` reads as `other`.
-    if (index === previousRunEnd && dominantScript(run) === dominantScript(previousRun)) residual += run;
+    if (index === previousRunEnd && script === previousScript) residual += run;
     index += length;
     previousRunEnd = index;
-    previousRun = run;
+    // A run of punctuation has no script of its own, so it neither breaks a tiling nor joins one:
+    // the script the junction is compared against stays the last one a run actually had.
+    if (script !== 'other') previousScript = script;
   }
   return residual;
 }
