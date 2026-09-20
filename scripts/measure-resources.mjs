@@ -37,6 +37,9 @@ class HarnessError extends Error { constructor(message) { super(message); this.n
 function usage() {
   return 'Usage: node scripts/measure-resources.mjs [--fixture test/fixtures/events-1000.jsonl] [--json-out <path>] [--sessions 20] [--prompts 9] [--hold-ms 20000] [--keep] [--self-check]\n';
 }
+function errText(err) {
+  return err instanceof Error ? err.message : String(err);
+}
 function intOption(values, name, fallback) {
   const n = Number(values[name] ?? fallback);
   if (!Number.isInteger(n) || n <= 0) throw new HarnessError(`invalid --${name}: ${values[name] ?? fallback}`);
@@ -54,7 +57,7 @@ function parseCli(argv) {
         'self-check': { type: 'boolean', default: false },
       },
     }).values;
-  } catch (error) { throw new HarnessError(`${error instanceof Error ? error.message : String(error)}\n${usage()}`); }
+  } catch (error) { throw new HarnessError(`${errText(error)}\n${usage()}`); }
   return {
     fixture: resolve(v.fixture ?? join(ROOT, 'test', 'fixtures', 'events-1000.jsonl')),
     jsonOut: v['json-out'] === undefined ? undefined : resolve(v['json-out']),
@@ -109,7 +112,7 @@ function jsonFiles(dir) {
 function spoolCount(dir) { return jsonFiles(dir) + jsonFiles(join(dir, 'failed')); }
 function isBusy(error) {
   if (error === null || typeof error !== 'object') return false;
-  return error.errcode === 5 || error.errcode === 6 || /database is locked|SQLITE_BUSY|SQLITE_LOCKED|\bbusy\b/i.test(`${error.errstr ?? ''} ${error instanceof Error ? error.message : error}`);
+  return error.errcode === 5 || error.errcode === 6 || /database is locked|SQLITE_BUSY|SQLITE_LOCKED|\bbusy\b/i.test(`${error.errstr ?? ''} ${errText(error)}`);
 }
 function readVm(pid) {
   try {
@@ -221,7 +224,7 @@ function finishSampling(sampler) {
   sampler.stop();
   const failure = sampler.failure();
   if (failure !== undefined) {
-    throw new HarnessError(`sampling stopped: ${failure instanceof Error ? failure.message : String(failure)}`);
+    throw new HarnessError(`sampling stopped: ${errText(failure)}`);
   }
 }
 function median(values) {
@@ -503,7 +506,7 @@ async function waitPending(env, cwd, timeoutMs) {
       const doc = await readDoctor(env, cwd);
       last = doc.generation.reason ?? '';
       if (doc.stuck.pending === 0) return;
-    } catch (error) { last = error instanceof Error ? error.message : String(error); }
+    } catch (error) { last = errText(error); }
     await sleep(DOCTOR_POLL_MS);
   }
   throw new HarnessError(`timed out waiting for doctor generation pending=0; last=${last}`);
@@ -998,7 +1001,7 @@ function requireInputs(cli) {
   // that still keeps the home and prints its path.
   let lines;
   try { lines = readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length; } catch (error) {
-    throw new HarnessError(`fixture file cannot be read: ${cli.fixture} (${error instanceof Error ? error.message : String(error)})`);
+    throw new HarnessError(`fixture file cannot be read: ${cli.fixture} (${errText(error)})`);
   }
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
   requireCleanTree();
@@ -1060,7 +1063,7 @@ async function runLive(cli) {
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errText(err);
     const name = err instanceof Error ? err.name : 'error';
     error = err instanceof HarnessError ? message : `unexpected ${name}: ${message}`;
     process.stderr.write(`${error}\n`);
@@ -1070,7 +1073,7 @@ async function runLive(cli) {
     if (paths !== undefined) {
       await stopHomeProcesses(paths.oboeteHome);
       try { copyObserveLog(paths.oboeteHome, cli.jsonOut); } catch (err) {
-        logError = `could not save the worker log beside --json-out: ${err instanceof Error ? err.message : String(err)}`;
+        logError = `could not save the worker log beside --json-out: ${errText(err)}`;
         process.stderr.write(`${logError}\n`);
       }
     }
@@ -1108,7 +1111,7 @@ async function main(argv) {
     } catch (error) {
       receiptError = error;
       report.failed = true;
-      report.error = `could not write the receipt: ${error instanceof Error ? error.message : String(error)}`;
+      report.error = `could not write the receipt: ${errText(error)}`;
     }
   }
   process.stdout.write(renderMarkdown(report));
@@ -1123,6 +1126,6 @@ async function main(argv) {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${errText(error)}\n`);
   process.exitCode = 2;
 }
