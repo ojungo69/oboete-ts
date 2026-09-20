@@ -642,6 +642,9 @@ function checkRetained(input) {
   const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1 || (s.failedKinds ?? []).length > 0).map((s) => s.id);
   return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows && (prior.failed ?? 0) === 0, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
 }
+// `spoolFiles` is the peak of what the samples saw and of what is left at the end, not the end
+// alone: the evidence claims no spool file at any sample, and a fallback the worker recovered
+// before shutdown would otherwise pass a check the table says it failed.
 function checkNotStuck(input) {
   // The run makes `observe --stop` succeed or throws, so `stopped` is the only end it demands, and
   // the sentinel it wrote must be gone: `src/worker/observe.ts` keeps a sentinel it could not
@@ -980,10 +983,14 @@ function buildBundles() {
 // The commit is taken before the build, and checked again once the measuring is done: HEAD can move
 // under a run that takes several minutes, and a receipt naming the revision the tree happened to be
 // on at the end would not be a receipt of the bundle that ran.
-function requireSameRevision(commit) {
+function requireSameRevision(commit, digest) {
   requireCleanTree();
   const now = gitHead();
   if (now !== commit) throw new HarnessError(`HEAD moved from ${commit} to ${now} during the run, so the bundle measured is not this revision's`);
+  // Every hook starts a new process from those two files, so a rebuild part way through would have
+  // different children running different code with nothing in the receipt to show it.
+  const built = bundleDigest();
+  if (built !== digest) throw new HarnessError(`the bundle changed from ${digest} to ${built} during the run, so its children did not all run the same code`);
 }
 function requireInputs(cli) {
   // Counted here rather than beside the report: this runs inside the try, so a fixture that is a
@@ -1000,7 +1007,7 @@ function requireInputs(cli) {
   for (const file of [BUNDLE, ENGINE]) {
     if (!existsSync(file)) throw new HarnessError(`the build produced no ${file}`);
   }
-  return { lines, commit };
+  return { lines, commit, digest: bundleDigest() };
 }
 // `root` is created by the caller, so a failure part way through still leaves it a home to keep and
 // a path to print.
@@ -1019,7 +1026,7 @@ function prepareIsolation(root) {
 function buildChecks({ a, b, hits, doctor, paths, samples }) {
   return {
     retained: checkRetained(hits),
-    notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: spoolCount(paths.spool), liveBatches: liveBatches(paths.db),
+    notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: Math.max(spoolCount(paths.spool), ...samples.map((row) => row.spool ?? 0)), liveBatches: liveBatches(paths.db),
       endReason: b.exitReason, workerErrors: b.workerErrors, badEnds: b.badEnds, stopMarker: b.stopMarker }),
     wal: checkWal({ start: b.walStart, peak: b.walPeak, final: b.walFinal, batchesHeld: b.batchesHeld }),
     rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks, unsampledWorkers: b.unsampledWorkers }),
@@ -1028,13 +1035,13 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
-  let fixtureLines = 0, commit = 'unknown';
+  let fixtureLines = 0, commit = 'unknown', digest = 'unknown';
   let priorIds, priorFailed, priorDeadline;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
-    ({ lines: fixtureLines, commit } = requireInputs(cli));
+    ({ lines: fixtureLines, commit, digest } = requireInputs(cli));
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = prepareIsolation(isolation);
     const env = childEnv(paths);
@@ -1049,7 +1056,7 @@ async function runLive(cli) {
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
-    requireSameRevision(commit);
+    requireSameRevision(commit, digest);
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
@@ -1073,7 +1080,7 @@ async function runLive(cli) {
   if (error === undefined && logError !== undefined) error = logError;
   const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
-    startedAt, node: `${process.execPath} (${process.version})`, commit, bundleSha256: bundleDigest(), fixture: cli.fixture, fixtureLines,
+    startedAt, node: `${process.execPath} (${process.version})`, commit, bundleSha256: digest, fixture: cli.fixture, fixtureLines,
     loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
     home: isolation,
   };

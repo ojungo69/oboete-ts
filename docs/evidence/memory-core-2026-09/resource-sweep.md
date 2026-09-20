@@ -43,7 +43,7 @@ the cost of generating from it. SC-009 recall is 0/40 for the same reason and is
 | capture hooks (phase A) | p99 174.5 ms, 100.0% ≤ 300 ms (n=717) | p99 165.2 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
 | phase B hooks | n=240, p50 211 ms, max 798 ms, none over 1 s, 0 non-zero | n=240, p50 209 ms, max 734 ms, none over 1 s, 0 non-zero | every hook exits 0 |
 | WAL during the hold | 0 → peak 29,190,232 bytes → 0 after the stop | 0 → peak 28,741,152 bytes → 0 | grows under a held reader, recycles after |
-| spool files at any sample | 0 | 0 | 0 |
+| spool files, highest sample or the end | 0 | 0 | 0, and the check reads the peak |
 | load average at start | 0.49 0.80 0.77 | 0.88 0.89 0.83 | — |
 
 Gated checks, both runs **pass**:
