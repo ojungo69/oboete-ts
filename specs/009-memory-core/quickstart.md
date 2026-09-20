@@ -2752,9 +2752,11 @@ Four checks are gated and pass on Node 24.16.0 and 22.23.1: all 1,322 rows phase
 there afterwards, with no missing, duplicate or failed-classification source and each session's
 `session_start`, `session_end`, `last_assistant_message` and `turn_end` stored exactly once;
 `pending = 0`, `liveBatches = 0`, `endReason = stopped` with no `worker-stop` sentinel left; the WAL recycling to 0 after the product's
-own stop path runs `wal_checkpoint(TRUNCATE)`; and peak `VmHWM` under 150 MiB (108.15 MiB and
-100.96 MiB) across every process of the run — the worker from the samples, and all 245 children
-from the kernel's figure at exit, which is what carries phase A's own 1,143 hooks into the bound.
+own stop path runs `wal_checkpoint(TRUNCATE)`; and the observed peak `VmHWM` under 150 MiB
+(108.15 MiB and 100.96 MiB) across every process of the run — the worker from the samples, and all
+245 children from the kernel's figure at exit, which is what carries phase A's own 1,143 hooks into
+the bound. One interval is not observed: growth in the last sample interval of the resident's life,
+since `/proc` goes with the process and the worker does not record its own peak (#307).
 Injection p99 (298.6 ms) and two session-start packs without `summary_pending` are reported rather
 than gated — they belong to the timing work.
 

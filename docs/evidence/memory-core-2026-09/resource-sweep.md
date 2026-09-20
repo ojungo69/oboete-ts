@@ -68,8 +68,9 @@ Gated checks, both runs **pass**:
   and on both versions that count was 0. What the resident's figure cannot carry is growth inside
   the last interval of its life: `VmHWM` is a high-water mark, so every sample carries every peak
   before it, but once the process is gone `/proc` is gone with it, and the worker does not record
-  its own peak when it ends. The gap is bounded by one sample interval, 250 ms; closing it properly
-  is #307.
+  its own peak when it ends. The gap is one sample interval, nominally 250 ms and longer whenever the
+  timer is delayed - the widest gap between two samples in these runs was 252 ms, and load or a
+  synchronous read can stretch it further. Closing it properly is #307.
 
 Reported, not gated:
 
