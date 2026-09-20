@@ -200,9 +200,11 @@ function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number
     && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
   // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
   // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with `𠮸`.
-  // `codePointAt` answers with the pair when the unit at the end opens one, so the run gives that
-  // half back and what the caller's junction keeps is a whole character.
-  if ((subject.codePointAt(index + length - 1) ?? 0) > 0xFFFF) length -= 1;
+  // The run gives that half back, so what the caller's junction keeps is a whole character. A high
+  // surrogate reads as a code point above the BMP when its low half follows and as itself when the
+  // field carries it alone; both are a run ending on half a character.
+  const last = subject.codePointAt(index + length - 1) ?? 0;
+  if (last > 0xFFFF || (last >= 0xD800 && last <= 0xDBFF)) length -= 1;
   // Giving that half back can leave less than a run, and a shorter coincidence is not a quote: the
   // field keeps those characters and is scored on them, which is what the minimum is for.
   return length >= MIN_QUOTED_RUN ? length : 0;

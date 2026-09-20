@@ -373,6 +373,15 @@ test('a field tiled out of two quotes keeps a whole character at the junction', 
   ];
   const tiled = output(observation({ title: '記録', body: 'abc𠮸de' }));
   assert.equal(checkLanguage(inputWithHint('ja', short), tiled), 'mismatch');
+
+  // The half can also be alone in the field, where it is not a code point above the BMP and has to
+  // be recognised as itself: `abc` plus a lone high surrogate matches four units of `abc𠮷`.
+  const lone = [
+    { id: 'e1', kind: 'prompt', text: '記録: abc𠮷' },
+    { id: 'e2', kind: 'prompt', text: '別の記録: defg' },
+  ];
+  const half = output(observation({ title: '記録', body: 'abc\uD842!defg' }));
+  assert.equal(checkLanguage(inputWithHint('ja', lone), half), 'mismatch');
 });
 
 test('a supplementary-plane character is one coincidence, not a quote', () => {
