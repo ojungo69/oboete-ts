@@ -19,7 +19,7 @@ const PENDING_TIMEOUT_MS = 3 * 60_000, STOPPED_TIMEOUT_MS = 2 * 60_000, BATCH_WA
 const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
 const NO_MODEL = new Set(['SC-009', 'session start']);
 const STAGES = ['hold', 'drain', 'stop', 'final'];
-const environHit = new Map();
+const ownPids = new Map();
 class HarnessError extends Error { constructor(message) { super(message); this.name = 'HarnessError'; } }
 function usage() {
   return 'Usage: node scripts/measure-resources.mjs [--fixture test/fixtures/events-1000.jsonl] [--json-out <path>] [--sessions 20] [--prompts 9] [--hold-ms 20000] [--keep] [--self-check]\n';
@@ -72,36 +72,48 @@ function readVm(pid) {
     return { rssKb: n('VmRSS'), hwmKb: n('VmHWM') };
   } catch { return null; }
 }
-function walkHome(home, fn) {
-  const needle = `OBOETE_HOME=${home}`;
-  let names = [];
-  try { names = readdirSync('/proc'); } catch { return; }
-  const live = new Set();
-  for (const name of names) {
-    if (!/^[0-9]+$/.test(name)) continue;
-    const pid = Number(name);
-    if (pid === process.pid) continue;
-    live.add(pid);
-    let hit = environHit.get(pid);
-    if (hit === undefined) {
-      try { hit = readFileSync(`/proc/${pid}/environ`).toString().split('\0').includes(needle); } catch { continue; }
-      // Only a hit is cached: a child read before it adopted the temp environment must be retried.
-      if (hit) environHit.set(pid, hit);
-    }
-    if (hit) fn(pid);
-  }
-  for (const pid of [...environHit.keys()]) { if (!live.has(pid)) environHit.delete(pid); }
+// Only the processes this harness starts, plus the worker pids the product itself writes to the
+// temp home's observe.log, are ever inspected. Scanning /proc for an OBOETE_HOME environment reads
+// the environment - and so the credentials - of processes this run does not own.
+function procIdent(pid) {
+  let text;
+  try { text = readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; }
+  const close = text.lastIndexOf(')');
+  if (close < 0) return null;
+  // Field 22 of /proc/<pid>/stat, counted from the state that follows the comm: a reused pid has a
+  // different start time, so a remembered pid never resolves to somebody else's process.
+  return text.slice(close + 1).trim().split(' ')[19] ?? null;
 }
-function pidsInHome(home) { const pids = []; walkHome(home, (pid) => pids.push(pid)); return pids; }
+function trackPid(pid, observe = false) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  const ident = procIdent(pid);
+  if (ident === null) return;
+  const prev = ownPids.get(pid);
+  ownPids.set(pid, { ident, observe: observe || (prev?.ident === ident && prev.observe === true) });
+}
+function readObserveLog(home) {
+  try { return readFileSync(join(home, 'logs', 'observe.log'), 'utf8'); } catch { return ''; }
+}
+function workerPidsFrom(text) {
+  return [...text.matchAll(/^\S+ info run start\b.*\bpid=(\d+)/gm)].map((m) => Number(m[1]));
+}
+function homeProcesses(home) {
+  for (const pid of workerPidsFrom(readObserveLog(home))) trackPid(pid, true);
+  const live = [];
+  for (const [pid, info] of ownPids) {
+    if (procIdent(pid) === info.ident) live.push({ pid, observe: info.observe });
+    else ownPids.delete(pid);
+  }
+  return live;
+}
+function pidsInHome(home) { return homeProcesses(home).map((proc) => proc.pid); }
 function sampleHome(paths, at = Date.now()) {
   const processes = [];
-  walkHome(paths.oboeteHome, (pid) => {
+  for (const { pid, observe } of homeProcesses(paths.oboeteHome)) {
     const vm = readVm(pid);
-    if (vm === null) return;
-    let observe = false;
-    try { observe = readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').includes('observe'); } catch { observe = false; }
+    if (vm === null) continue;
     processes.push({ pid, rssKb: vm.rssKb, hwmKb: vm.hwmKb, observe });
-  });
+  }
   return {
     at, dbBytes: fileBytes(paths.db), walBytes: fileBytes(`${paths.db}-wal`), spool: spoolCount(paths.spool),
     rssKb: processes.reduce((m, p) => Math.max(m, p.rssKb), 0), hwmKb: processes.reduce((m, p) => Math.max(m, p.hwmKb), 0), processes,
@@ -143,18 +155,19 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     const child = spawn(file, args, {
       cwd, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    let stdout = ''; let stderr = '';
+    trackPid(child.pid);
+    let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => { stderr += chunk; if (inheritStderr === true) process.stderr.write(chunk); });
-    const timer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); }, timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); }, timeoutMs);
     child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.stdin?.on('error', () => {});
     if (stdin !== undefined) child.stdin?.end(stdin);
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      resolvePromise({ status, signal, stdout, stderr, timedOut: status === null && signal !== null, ms: Date.now() - t0 });
+      resolvePromise({ status, signal, stdout, stderr, timedOut, ms: Date.now() - t0 });
     });
   });
 }
@@ -210,9 +223,14 @@ function holdReader(dbPath) {
   };
 }
 function openRo(path, timeout) { return new DatabaseSync(path, { readOnly: true, timeout }); }
+// Throws rather than swallowing: the temp home is deleted right after this, so a silently lost
+// copy would leave the run with no worker log at all.
 function copyObserveLog(home, jsonOut) {
   if (jsonOut === undefined) return;
-  try { writeFileSync(`${jsonOut.replace(/\.json$/i, '')}.observe.log`, readFileSync(join(home, 'logs', 'observe.log'))); } catch { /* no log */ }
+  const source = join(home, 'logs', 'observe.log');
+  if (!existsSync(source)) return;
+  mkdirSync(dirname(jsonOut), { recursive: true });
+  writeFileSync(`${jsonOut.replace(/\.json$/i, '')}.observe.log`, readFileSync(source));
 }
 function findReplayRepo(json, stderr, tmp) {
   const fromJson = typeof json?.repo === 'string' ? json.repo : undefined;
@@ -339,10 +357,13 @@ function loadHits(dbPath, spoolDir, markers, sessionIds) {
       hits: rows.filter((row) => (typeof row.content === 'string' && row.content.includes(id)) || (row.classification_state === 'failed' && row.prompt_id === id)).map((row) => ({ classification_state: row.classification_state })),
       spool: spoolTexts.some((text) => text.includes(id)),
     })),
-    sessions: sessionIds.map((id) => ({
-      id, starts: rows.filter((row) => row.native_session_id === id && row.kind === 'session_start').length,
-      ends: rows.filter((row) => row.native_session_id === id && row.kind === 'session_end').length,
-    })),
+    // The Stop hook writes a last_assistant_message and a turn_end; a hook that exits 0 having
+    // stored neither is the loss this run is here to catch (contracts/agents.md, adaptClaudeStop).
+    sessions: sessionIds.map((id) => {
+      const own = rows.filter((row) => row.native_session_id === id);
+      const count = (kind) => own.filter((row) => row.kind === kind).length;
+      return { id, starts: count('session_start'), ends: count('session_end'), messages: count('last_assistant_message'), turnEnds: count('turn_end') };
+    }),
     spoolFiles: spoolTexts.length,
   };
 }
@@ -353,15 +374,15 @@ function parseGeneration(reason) {
 function checkRetained(input) {
   const missing = []; const duplicate = []; const failed = [];
   for (const marker of input.markers) {
-    const good = marker.hits.filter((hit) => hit.classification_state !== 'failed');
-    const bad = marker.hits.filter((hit) => hit.classification_state === 'failed');
-    if (good.length === 1) continue;
-    if (good.length > 1) duplicate.push(marker.id);
-    else if (marker.spool) continue;
-    else if (bad.length > 0) failed.push(marker.id);
-    else missing.push(marker.id);
+    const good = marker.hits.filter((hit) => hit.classification_state !== 'failed').length;
+    const bad = marker.hits.filter((hit) => hit.classification_state === 'failed').length;
+    // Each failure is counted on its own: one stored row does not excuse a second row beside it,
+    // and neither excuses a failed classification of the same prompt.
+    if (bad > 0) failed.push(marker.id);
+    if (good > 1) duplicate.push(marker.id);
+    else if (good === 0 && bad === 0 && !marker.spool) missing.push(marker.id);
   }
-  const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1).map((s) => s.id);
+  const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1).map((s) => s.id);
   return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0, missing, duplicate, failed, sessionFail, spoolFiles: input.spoolFiles };
 }
 function checkNotStuck(input) {
@@ -377,15 +398,25 @@ function checkRss(input) {
 }
 function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
-  const sess = [{ id: 's0', starts: 1, ends: 1 }];
+  const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1 };
+  const sess = [{ id: 's0', ...one }];
   const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 1, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', workerErrors: 0, badEnds: [] };
-  assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', starts: 1, ends: 1 }], spoolFiles: 0 }).pass, true);
+  assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
   const mixed = checkRetained({ markers: [hit('miss', 'done', 0), hit('dup', 'done', 2)], sessions: sess, spoolFiles: 0 });
   assert.equal(mixed.pass, false); assert.deepEqual(mixed.missing, ['miss']); assert.deepEqual(mixed.duplicate, ['dup']);
   const classified = checkRetained({ markers: [hit('fail', 'failed')], sessions: sess, spoolFiles: 0 });
   assert.equal(classified.pass, false); assert.deepEqual(classified.failed, ['fail']);
-  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', starts: 1, ends: 0 }], spoolFiles: 0 }).pass, false);
-  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', starts: 2, ends: 1 }], spoolFiles: 0 }).pass, false);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, ends: 0 }], spoolFiles: 0 }).pass, false);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, starts: 2 }], spoolFiles: 0 }).pass, false);
+  const bothStates = checkRetained({ markers: [{ id: 'both', hits: [{ classification_state: 'done' }, { classification_state: 'failed' }], spool: false }], sessions: sess, spoolFiles: 0 });
+  assert.equal(bothStates.pass, false); assert.deepEqual(bothStates.failed, ['both']); assert.deepEqual(bothStates.duplicate, []);
+  const spooled = checkRetained({ markers: [hit('waiting', 'done', 0, true)], sessions: sess, spoolFiles: 1 });
+  assert.equal(spooled.pass, true); assert.deepEqual(spooled.missing, []);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, messages: 0 }], spoolFiles: 0 }).pass, false);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, turnEnds: 2 }], spoolFiles: 0 }).pass, false);
+  assert.deepEqual(workerPidsFrom('2026-01-01T00:00:00.000Z info run start pid=4242\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped pid=4242\n'), [4242]);
+  assert.equal(typeof procIdent(process.pid), 'string');
+  assert.equal(procIdent(2 ** 22 + 1), null);
   assert.equal(checkNotStuck(stuckOk).pass, true);
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
@@ -445,7 +476,7 @@ function checkRows(report) {
   return [
     ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} spoolFiles=${c.retained.spoolFiles}`],
     ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
-    ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} fraction=${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
+    ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
     ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB. ${c.rss.note}`],
   ];
 }
@@ -505,8 +536,7 @@ async function phaseB(cli, paths, env, runId, samples) {
     if (stop.timedOut || stop.status !== 0) throw new HarnessError(`observe --stop failed status=${stop.status} signal=${stop.signal}`);
     await waitGone(paths.oboeteHome, paths.db, STOPPED_TIMEOUT_MS);
     stage = 'final';
-    let logText = '';
-    try { logText = readFileSync(join(paths.oboeteHome, 'logs', 'observe.log'), 'utf8'); } catch { /* missing */ }
+    const logText = readObserveLog(paths.oboeteHome);
     const batchesHeld = countBatchLines(logText, holdFrom, holdTo);
     if (batchesHeld === 0) throw new HarnessError('held reader never overlapped a worker batch');
     const held = samples.filter((s) => s.stage === 'hold');
@@ -527,7 +557,7 @@ async function phaseB(cli, paths, env, runId, samples) {
 }
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
-  let isolation, paths, workerReason, error;
+  let isolation, paths, workerReason, error, logError;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '', repoSource: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
@@ -563,15 +593,18 @@ async function runLive(cli) {
   } finally {
     if (isolation !== undefined) {
       await stopHomeProcesses(paths.oboeteHome);
-      copyObserveLog(paths.oboeteHome, cli.jsonOut);
-      if (cli.keep) process.stderr.write(`kept ${isolation}\n`); else rmSync(isolation, { recursive: true, force: true });
+      try { copyObserveLog(paths.oboeteHome, cli.jsonOut); } catch (err) {
+        logError = `could not save the worker log beside --json-out: ${err instanceof Error ? err.message : String(err)}`;
+        process.stderr.write(`${logError}\n`);
+      }
+      if (cli.keep || logError !== undefined) process.stderr.write(`kept ${isolation}\n`); else rmSync(isolation, { recursive: true, force: true });
     }
   }
-  const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
+  const failed = error !== undefined || logError !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
     startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), fixture: cli.fixture,
     fixtureLines: existsSync(cli.fixture) ? readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length : 0,
-    loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, workerReason,
+    loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
   };
 }
 async function main(argv) {
