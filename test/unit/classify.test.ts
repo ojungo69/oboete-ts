@@ -12,6 +12,7 @@ import {
   rejectsDirectives,
   sessionSummary,
 } from '../../src/observer/classify.js';
+import { canonicalJson } from '../../src/events.js';
 import {
   eventParts,
   eventText,
@@ -188,7 +189,9 @@ function pagedEvent(
   event: { id: string; kind: string; captured_at?: number; [field: string]: unknown },
   slice: (canonical: string) => string,
 ): ObserverInput['events'][number] {
-  const canonical = JSON.stringify(event);
+  // `canonicalJson`, not `JSON.stringify`: the page is a slice of the sorted spelling, and where a
+  // key lands in it is what decides whether the slice a caller asks for exists at all.
+  const canonical = canonicalJson(event);
   const text = slice(canonical);
   const start = canonical.indexOf(text);
   assert.notEqual(start, -1, 'the slice has to come from the canonical JSON');
@@ -288,19 +291,24 @@ test('the last page of a tool call carries its name, and the name exempts a titl
   // `decodeFragment` returns its value as a run of its own. The filter above never sees it.
   // A fragment is the only event of its request (`request.ts` closes the page after one), and the
   // hint is derived from what is sent rather than given, so both are that way here.
+  // Over `MAX_INPUT_CHARS`, because an event that fits is sent whole and never paged at all.
   const page = pagedEvent(
     { id: 'e1', kind: 'tool_call', captured_at: NOW,
-      input: { text: '配布の設定を確認しました。'.repeat(4) },
+      input: { paths: [], text: '配布の設定を確認しました。'.repeat(2_000) },
       tool_name: 'mcp:serena/read_file' },
-    (canonical) => canonical.slice(canonical.indexOf('"input"')));
+    (canonical) => canonical.slice(canonical.length - 300));
+  assert.ok(page.fragment!.text.endsWith('"mcp:serena/read_file"}'), 'this is the last-page shape');
+  // Whole, because this name fits in one page. `fitFragment` cuts wherever the budget falls, so a
+  // long enough name arrives split and only its tail is a run; the exemption does not need the
+  // whole name either way.
   assert.ok(eventParts(page).includes('mcp:serena/read_file'));
   const hint = dominantScript(eventText(page));
   assert.equal(hint, 'ja', 'the page is Japanese apart from the name it carries');
   // Keeping the name out of `eventParts` is not what closes this: the exemption is a substring
   // test, so any four-character Latin run the request carries — `read` inside a path, a command or
   // an English sentence — exempts a title of `Read` just the same (#291, measured). The first
-  // assertion is a permanent fact about the last page; this one is the gap, and it is the one that
-  // flips when #291 lands.
+  // assertion is a fact about the last page that no filter here changes; this one is the gap, and
+  // it is the one that flips when #291 lands.
   const titled = output(observation({ title: 'Read', body: 'Read' }));
   assert.equal(checkLanguage(inputWithHint(hint, [page]), titled), 'ok');
 });

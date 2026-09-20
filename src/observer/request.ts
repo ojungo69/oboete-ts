@@ -292,9 +292,10 @@ function fitFragment(
     const middle = Math.floor((low + high) / 2);
     let end = middle;
     if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]) && /[\uDC00-\uDFFF]/u.test(text[end])) end -= 1;
-    // Floored because `slice` reads a negative end from the end of the string: an unfloored backoff
-    // past zero would make the candidate almost the whole source rather than an empty page. The
-    // binary search discards the floored candidate on its own (`end > portion.start` below).
+    // Floored at the portion's own start, which is what a page may not reach back past. The backoff
+    // cannot reach zero by itself — each of its arms needs the characters it steps over to exist,
+    // so it never returns more than `end` — and the binary search discards a floored candidate on
+    // its own (`end > portion.start` below).
     end = Math.max(portion.start, end - incompleteEscape(text, end));
     const candidate: ObserverEvent = {
       id: event.id, kind: event.kind, captured_at: event.captured_at,

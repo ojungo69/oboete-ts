@@ -71,13 +71,19 @@ export function dominantScript(text: string): 'ja' | 'en' | 'other' {
  * FR-014: the observer answers in the language of the content. The caller retries once on
  * `mismatch` and routes the batch to the fallback with `language_mismatch` on the second.
  *
- * A field is scored on what the observer *wrote*, not on what it quoted. The prompt tells it to
- * carry a declared exact fact character for character, so an English session recording one Japanese
- * fact must not lose the whole batch for it — and the same field usually carries framing around the
- * quote ("Durable fact: <the fact>"), which a whole-field comparison would still call a mismatch.
- * Removing every run the request already carries and scoring the residual covers the framed shape,
- * a title trimmed to its limit, a body trimmed with an omission marker, and a title reused from a
- * nearby memory, under one rule.
+ * A field whose own script disagrees with the hint is scored on what the observer *wrote*, not on
+ * what it quoted. The prompt tells it to carry a declared exact fact character for character, so an
+ * English session recording one Japanese fact must not lose the whole batch for it — and the same
+ * field usually carries framing around the quote ("Durable fact: <the fact>"), which a whole-field
+ * comparison would still call a mismatch. Removing every run the request already carries and scoring
+ * the residual covers the framed shape, a title trimmed to its limit, a body trimmed with an
+ * omission marker, and a title reused from a nearby memory, under one rule.
+ *
+ * A field whose own script *agrees* is accepted whole and its residual is never scored, which is
+ * how this read before the exemption existed and is not changed here: a long quotation in the
+ * hint's language therefore carries prose in another language past the gate (#295, reproduced).
+ * Scoring every field's residual is one deleted line and an unmeasured rise in the
+ * `language_mismatch` fallback rate, which is why it is that issue and not this function.
  */
 export function checkLanguage(input: ObserverInput, output: ObserverOutput): 'ok' | 'mismatch' {
   // Without a dominant script in the input there is nothing to compare the answer against.
