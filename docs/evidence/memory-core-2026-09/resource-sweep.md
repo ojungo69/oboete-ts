@@ -13,9 +13,11 @@ running on the same machine; the load at the start of each run is in the table.
 
 - **Phase A** replays `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and the
   resident worker, with `[observer] preset = "none"`, and reads the replay's own bounds.
-- **Phase B** holds a read-only connection open for 20 seconds while 20 sessions of 9 prompts each
-  keep capturing, sampling the database size, the WAL size, the spool and every one of the run's
-  processes (`VmRSS`/`VmHWM`) about every 250 ms, then drains, stops and samples once more.
+- **Phase B** holds a read-only connection open for at least 20 seconds - `--hold-ms` is a floor,
+  and the hold also carries the session-end hooks and the wait for a worker batch to overlap it, so
+  the measured holds were 26.7 s and 26.6 s - while 20 sessions of 9 prompts each keep capturing,
+  sampling the database size, the WAL size, the spool and every one of the run's processes
+  (`VmRSS`/`VmHWM`) about every 250 ms, then drains, stops and samples once more.
 
 `preset = "none"` means no summarizer runs, so every source ends `waiting` as a deferred
 `no_provider`. That is the point of the sweep: it measures the cost of holding retained history, not
@@ -26,7 +28,8 @@ the cost of generating from it. SC-009 recall is 0/40 for the same reason and is
 | | Node 24.16.0 | Node 22.23.1 | Bound |
 |---|---|---|---|
 | worker peak `VmHWM` (phase A) | 111,036 KiB (108.43 MiB) | 103,336 KiB (100.91 MiB) | < 150 MiB |
-| worker peak `VmHWM` (phase B hold) | 102,356 KiB (99.96 MiB) | 94,816 KiB (92.59 MiB) | same bound |
+| worker peak `VmHWM` (phase B, all stages) | 102,356 KiB (99.96 MiB) | 94,816 KiB (92.59 MiB) | same bound |
+| worker peak `VmHWM` (during the hold itself) | 100,732 KiB (98.37 MiB) | 92,772 KiB (90.60 MiB) | reported |
 | hook process peak `VmHWM` (phase B) | 97,968 KiB (95.67 MiB) | 91,760 KiB (89.61 MiB) | same bound |
 | growth per 1,000 events | 4,844,369 bytes | 4,836,575 bytes | recorded, not gated |
 | capture hooks (phase A) | p99 166.1 ms, 100.0% ≤ 300 ms (n=717) | p99 162.1 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
@@ -56,17 +59,33 @@ Reported, not gated:
 - session start: ready max 222.2 ms (n=1); pending max 213.5 ms (n=48), with 46 of 48 packs carrying
   `summary_pending`.
 - SC-009 recall 0/40, by construction of `preset = "none"`.
-- three phase B hooks on 24.x and two on 22.x took about 3 s while every other hook stayed under
-  280 ms. All exited 0. The 2026-09-17 run of the same harness on an idle machine had none, and
-  these runs shared the machine with an interactive session, so the outlier is not attributed here;
-  hook cold start is #210.
+- three phase B hooks on 24.x (3,136-3,192 ms) and two on 22.x (3,094 and 3,095 ms) took about 3 s;
+  the slowest of all the others was 288 ms (24.x) and 283 ms (22.x). All exited 0. The 2026-09-17
+  run of the same harness on an idle machine had none, and these runs shared the machine with an
+  interactive session, so the outlier is not attributed here; hook cold start is #210.
 
 ## What this run cannot say
 
-- **Long-run growth.** A 20-second hold cannot show it. The seven-day run is #268.
+- **Long-run growth.** A half-minute hold cannot show it. The seven-day run is #268.
 - **Scale.** 1,051 events is the fixture, not the 10,000- and 100,000-event runs of #267.
 - **A real summarizer.** With `preset = "none"` nothing is generated, so neither the provider's cost
   nor recall is exercised here.
+
+## How to re-run
+
+The harness runs the published bundle, so build first, and give each Node version its own
+`--json-out`. The harness's own exit code is the result - 0 all gated checks passed, 1 a check or a
+hook failed, 2 the run could not be completed - so do not pipe it away:
+
+```sh
+npm run build
+~/.nvm/versions/node/v24.16.0/bin/node scripts/measure-resources.mjs \
+  --json-out /var/tmp/oboete-t042/v8-24.16.0.json > /var/tmp/oboete-t042/v8-24.16.0.md
+echo "exit=$?"
+```
+
+`node scripts/measure-resources.mjs --self-check` runs the harness's own assertions without touching
+a temporary home. A run takes about seven minutes, four of them in the phase A replay.
 
 ## Receipts
 

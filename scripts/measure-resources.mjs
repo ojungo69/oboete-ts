@@ -19,7 +19,9 @@ const PENDING_TIMEOUT_MS = 3 * 60_000, STOPPED_TIMEOUT_MS = 2 * 60_000, BATCH_WA
 const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
 const NO_MODEL = new Set(['SC-009', 'session start']);
 const STAGES = ['hold', 'drain', 'stop', 'final'];
+const SESSION_KINDS = ['session_start', 'session_end', 'last_assistant_message', 'turn_end'];
 const ownPids = new Map();
+const loggedPids = new Set();
 class HarnessError extends Error { constructor(message) { super(message); this.name = 'HarnessError'; } }
 function usage() {
   return 'Usage: node scripts/measure-resources.mjs [--fixture test/fixtures/events-1000.jsonl] [--json-out <path>] [--sessions 20] [--prompts 9] [--hold-ms 20000] [--keep] [--self-check]\n';
@@ -84,12 +86,18 @@ function procIdent(pid) {
   // different start time, so a remembered pid never resolves to somebody else's process.
   return text.slice(close + 1).trim().split(' ')[19] ?? null;
 }
-function trackPid(pid, observe = false) {
+function adopt(pid, observe) {
   if (!Number.isInteger(pid) || pid <= 0) return;
   const ident = procIdent(pid);
   if (ident === null) return;
-  const prev = ownPids.get(pid);
-  ownPids.set(pid, { ident, observe: observe || (prev?.ident === ident && prev.observe === true) });
+  ownPids.set(pid, { ident, observe });
+}
+// A worker pid is taken from the log once. The line stays in the log after that process ends, and a
+// pid carrying that number later belongs to somebody else.
+function adoptLogged(pid) {
+  if (loggedPids.has(pid)) return;
+  loggedPids.add(pid);
+  adopt(pid, true);
 }
 function readObserveLog(home) {
   try { return readFileSync(join(home, 'logs', 'observe.log'), 'utf8'); } catch { return ''; }
@@ -98,10 +106,10 @@ function workerPidsFrom(text) {
   return [...text.matchAll(/^\S+ info run start\b.*\bpid=(\d+)/gm)].map((m) => Number(m[1]));
 }
 function homeProcesses(home) {
-  for (const pid of workerPidsFrom(readObserveLog(home))) trackPid(pid, true);
+  for (const pid of workerPidsFrom(readObserveLog(home))) adoptLogged(pid);
   const live = [];
   for (const [pid, info] of ownPids) {
-    if (procIdent(pid) === info.ident) live.push({ pid, observe: info.observe });
+    if (procIdent(pid) === info.ident) live.push({ pid, ident: info.ident, observe: info.observe });
     else ownPids.delete(pid);
   }
   return live;
@@ -155,7 +163,7 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     const child = spawn(file, args, {
       cwd, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    trackPid(child.pid);
+    adopt(child.pid, false);
     let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
@@ -328,10 +336,18 @@ async function waitGone(home, dbPath, timeoutMs) {
   throw new HarnessError(`timed out waiting for home processes to exit and worker_lease to have no live owner after observe --stop; leftover=${pidsInHome(home).join('|') || 'none'}`);
 }
 async function stopHomeProcesses(home) {
-  for (const pid of pidsInHome(home)) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
+  // The identity is read again between the listing and the signal: a pid that ended in between is
+  // somebody else's by the time the signal would land.
+  const signalAll = (signal) => {
+    for (const { pid, ident } of homeProcesses(home)) {
+      if (procIdent(pid) !== ident) continue;
+      try { process.kill(pid, signal); } catch { /* gone */ }
+    }
+  };
+  signalAll('SIGTERM');
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline && pidsInHome(home).length > 0) await sleep(100);
-  for (const pid of pidsInHome(home)) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  signalAll('SIGKILL');
 }
 function liveBatches(dbPath) {
   try { const db = openRo(dbPath, 2_000); try { return Number(db.prepare("SELECT COUNT(*) AS n FROM observation_batches WHERE state IN ('pending', 'running')").get()?.n ?? 0); } finally { db.close(); } } catch { return -1; }
@@ -361,8 +377,11 @@ function loadHits(dbPath, spoolDir, markers, sessionIds) {
     // stored neither is the loss this run is here to catch (contracts/agents.md, adaptClaudeStop).
     sessions: sessionIds.map((id) => {
       const own = rows.filter((row) => row.native_session_id === id);
-      const count = (kind) => own.filter((row) => row.kind === kind).length;
-      return { id, starts: count('session_start'), ends: count('session_end'), messages: count('last_assistant_message'), turnEnds: count('turn_end') };
+      const count = (kind) => own.filter((row) => row.kind === kind && row.classification_state !== 'failed').length;
+      return {
+        id, starts: count('session_start'), ends: count('session_end'), messages: count('last_assistant_message'), turnEnds: count('turn_end'),
+        failedKinds: SESSION_KINDS.filter((kind) => own.some((row) => row.kind === kind && row.classification_state === 'failed')),
+      };
     }),
     spoolFiles: spoolTexts.length,
   };
@@ -382,7 +401,7 @@ function checkRetained(input) {
     if (good > 1) duplicate.push(marker.id);
     else if (good === 0 && bad === 0 && !marker.spool) missing.push(marker.id);
   }
-  const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1).map((s) => s.id);
+  const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1 || (s.failedKinds ?? []).length > 0).map((s) => s.id);
   return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0, missing, duplicate, failed, sessionFail, spoolFiles: input.spoolFiles };
 }
 function checkNotStuck(input) {
@@ -398,7 +417,7 @@ function checkRss(input) {
 }
 function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
-  const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1 };
+  const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
   const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 1, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', workerErrors: 0, badEnds: [] };
   assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
@@ -414,6 +433,7 @@ function selfCheck() {
   assert.equal(spooled.pass, true); assert.deepEqual(spooled.missing, []);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, messages: 0 }], spoolFiles: 0 }).pass, false);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, turnEnds: 2 }], spoolFiles: 0 }).pass, false);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, failedKinds: ['last_assistant_message', 'turn_end'] }], spoolFiles: 0 }).pass, false);
   assert.deepEqual(workerPidsFrom('2026-01-01T00:00:00.000Z info run start pid=4242\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped pid=4242\n'), [4242]);
   assert.equal(typeof procIdent(process.pid), 'string');
   assert.equal(procIdent(2 ** 22 + 1), null);
@@ -500,7 +520,10 @@ function renderMarkdown(report) {
 async function phaseA(cli, paths, env) {
   const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs: REPLAY_TIMEOUT_MS, inheritStderr: true });
   if (result.timedOut) throw new HarnessError('phase A replay timed out');
-  if (result.status === 2 || result.status === 3) throw new HarnessError(`phase A replay exited ${result.status}`);
+  // 0 is a clean replay and 1 is a replay whose own bounds failed, which replayGates records. Any
+  // other code, and any signal, ends the run: the JSON may already have been printed by then.
+  if (result.signal !== null || result.status === null) throw new HarnessError(`phase A replay was killed by ${result.signal ?? 'an unreported signal'}`);
+  if (result.status !== 0 && result.status !== 1) throw new HarnessError(`phase A replay exited ${result.status}`);
   if (!existsSync(paths.db)) throw new HarnessError('phase A left no memory.db');
   const json = parseJsonStdout(result.stdout);
   const found = findReplayRepo(json, result.stderr, paths.tmp);

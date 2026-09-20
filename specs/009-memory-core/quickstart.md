@@ -2742,8 +2742,10 @@ The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run 
 against `1a83a019` on both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
-the resident worker, then a 20-second hold of a read-only connection while 20 sessions of 9 prompts
-each keep capturing, sampling every ~250 ms and again after the drain and stop.
+the resident worker, then a hold of a read-only connection of at least 20 seconds (26.7 s and 26.6 s
+measured, the rest being the session-end hooks and the wait for a batch to overlap the hold) while
+20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and again after the drain and
+stop.
 
 Four checks are gated and pass on Node 24.16.0 and 22.23.1: no missing, duplicate or
 failed-classification source and each session's `session_start`, `session_end`,
@@ -2755,7 +2757,7 @@ that took about 3 s on a machine shared with an interactive session (#210) are r
 gated — they belong to the timing work.
 
 What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a
-20-second hold shows nothing about long-run growth (#268), and `[observer] preset = "none"` means no
+half-minute hold shows nothing about long-run growth (#268), and `[observer] preset = "none"` means no
 provider runs at all, so SC-009 recall is 0/40 by construction and is reported, not gated. Local
 model consumption needs a model this task is not authorised to activate. T042 therefore stays open
 with its three named legs outstanding, which is why its line in `tasks.md` carries the status rather
