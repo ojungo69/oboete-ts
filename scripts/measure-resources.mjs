@@ -88,8 +88,10 @@ function requireCleanTree() {
   }
   // An untracked file is not a modification, but `src` imports its own modules with an explicit
   // `.js` suffix, so an untracked `src/x.js` beside the tracked `src/x.ts` is what the bundler
-  // resolves: the run would measure it while the commit still looked clean.
-  const others = git('ls-files', '--others', '--exclude-standard', '--', 'src');
+  // resolves: the run would measure it while the commit still looked clean. Ignored files count
+  // too - being ignored is a reason git says nothing about a file, not a reason the bundler skips
+  // it - so this asks for every path git does not track, without `--exclude-standard`.
+  const others = git('ls-files', '--others', '--', 'src');
   if (others.status !== 0) throw new HarnessError(`git ls-files failed: ${(others.stderr ?? '').trim() || 'unknown error'}`);
   const untracked = others.stdout.split('\n').filter((line) => line !== '');
   if (untracked.length > 0) {
