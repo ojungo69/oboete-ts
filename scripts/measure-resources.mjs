@@ -166,11 +166,21 @@ function sampleHome(paths, at = Date.now()) {
     rssKb: processes.reduce((m, p) => Math.max(m, p.rssKb), 0), hwmKb: processes.reduce((m, p) => Math.max(m, p.hwmKb), 0), processes,
   };
 }
+// A sample that cannot be taken - an unreadable database, a spool that is not a directory - must
+// end the run through its own error path. An exception inside the timer would instead leave Node to
+// exit on an uncaught error, with the resident still running and no report written.
 function startSampler(paths, sink, stageOf) {
+  let failure;
   const tick = () => { sink.push({ ...sampleHome(paths), stage: stageOf() }); };
+  const guarded = () => {
+    try { tick(); } catch (error) { failure ??= error; clearInterval(timer); }
+  };
   tick();
-  const timer = setInterval(tick, SAMPLE_MS);
-  return { stop() { clearInterval(timer); tick(); } };
+  const timer = setInterval(guarded, SAMPLE_MS);
+  return {
+    stop() { clearInterval(timer); guarded(); },
+    failure() { return failure; },
+  };
 }
 function median(values) {
   if (values.length === 0) return 0;
@@ -617,6 +627,20 @@ async function groupKillCheck() {
     assert.ok(held.length > 0, 'the stubborn command is in the wrapper group');
     await stopHomeProcesses(scratch);
     assert.equal(await gone(held[0]), true, 'cleanup ends a command that ignored SIGTERM');
+    // A read this run cannot do is an error, not a zero, and an error inside the sampler's timer
+    // has to come back as a failure the run can report rather than as an uncaught exception.
+    assert.equal(fileBytes(join(scratch, 'absent')), 0);
+    writeFileSync(join(scratch, 'plain'), 'x');
+    assert.throws(() => fileBytes(join(scratch, 'plain', 'below')), /ENOTDIR/);
+    let ticks = 0;
+    const sampler = startSampler({ oboeteHome: scratch, db: join(scratch, 'plain'), spool: join(scratch, 'spool') }, [], () => {
+      ticks += 1;
+      if (ticks > 1) throw new Error('sampler tick failed');
+      return 'hold';
+    });
+    await sleep(600);
+    sampler.stop();
+    assert.match(String(sampler.failure()?.message), /sampler tick failed/);
     // The same command under spawnWait: its timeout must end it and the call must come back.
     const timedOutRun = await spawnWait(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000);"], { env: process.env, cwd: ROOT, timeoutMs: 1_000 });
     assert.equal(timedOutRun.timedOut, true, 'a command that ignores SIGTERM still ends its own call');
@@ -798,6 +822,10 @@ async function phaseB(cli, paths, env, runId, samples) {
     if (batchesHeld === 0) throw new HarnessError('held reader never overlapped a worker batch');
     const held = samples.filter((s) => s.stage === 'hold');
     if (!held.some((s) => s.processes.some((p) => p.observe))) throw new HarnessError('no worker process of this home was sampled while the reader was held');
+    const sampling = sampler.failure();
+    if (sampling !== undefined) {
+      throw new HarnessError(`sampling stopped: ${sampling instanceof Error ? sampling.message : String(sampling)}`);
+    }
     const walStart = held[0]?.walBytes ?? 0;
     const walFinal = fileBytes(`${paths.db}-wal`);
     return {
@@ -814,11 +842,14 @@ async function phaseB(cli, paths, env, runId, samples) {
 }
 // The temporary home, its bin with the node the product's hooks find on PATH, and the directory the
 // wrappers write their RSS into.
-function prepareIsolation(cli) {
+function requireInputs(cli) {
   if (!existsSync(cli.fixture)) throw new HarnessError(`fixture file not found: ${cli.fixture}`);
   if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
-  const root = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
+}
+// `root` is created by the caller, so a failure part way through still leaves it a home to keep and
+// a path to print.
+function prepareIsolation(root) {
   const paths = {
     root, userHome: join(root, 'home'), oboeteHome: join(root, 'oboete'),
     tmp: join(root, 'tmp'), repo: '', db: join(root, 'oboete', 'memory.db'), spool: join(root, 'oboete', 'spool'),
@@ -847,8 +878,9 @@ async function runLive(cli) {
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
   try {
-    paths = prepareIsolation(cli);
-    isolation = paths.root;
+    requireInputs(cli);
+    isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
+    paths = prepareIsolation(isolation);
     const env = childEnv(paths);
     a = await phaseA(cli, paths, env);
     priorIds = historyIds(paths.db);
