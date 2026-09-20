@@ -228,8 +228,11 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     child.on('close', (status, signal) => {
       clearTimeout(timer);
       const hwmKb = readRss(rssFile);
+      // A group id is free for reuse the moment the group empties, so an ended group is forgotten
+      // here rather than carried to cleanup, where it would name whatever took the number next.
+      if (child.pid !== undefined && !groupAlive(child.pid)) spawnedGroups.delete(child.pid);
       childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb });
-      resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb, ms: Date.now() - t0 });
+      resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb, pid: child.pid, ms: Date.now() - t0 });
     });
   });
 }
@@ -390,7 +393,8 @@ async function waitGone(home, dbPath, timeoutMs) {
   throw new HarnessError(`timed out waiting for home processes to exit and worker_lease to have no live owner after observe --stop; leftover=${pidsInHome(home).join('|') || 'none'}`);
 }
 // Signal 0 to a group id succeeds while any member is left, which is how a wrapper whose command
-// outlived it is still found after the wrapper itself is gone.
+// outlived it is still found after the wrapper itself is gone. A group that has never been seen
+// empty cannot have been renumbered: the kernel holds the id while the group has members.
 function groupAlive(pid) {
   try { process.kill(-pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
 }
@@ -518,7 +522,16 @@ async function groupKillCheck() {
     await sleep(500);
     assert.equal(existsSync(`/proc/${inner[0]}`), false);
     assert.equal(groupAlive(child.pid), false);
-  } finally { rmSync(rssFile, { force: true }); }
+    // A child that ends on its own leaves no group behind for the cleanup path to signal.
+    const quick = await spawnWait(process.execPath, ['-e', 'process.exit(0);'], { env: process.env, cwd: ROOT, timeoutMs: 10_000 });
+    assert.equal(quick.status, 0);
+    assert.ok(quick.hwmKb > 0, 'the wrapper reports the peak of the command it ran');
+    assert.equal(spawnedGroups.has(quick.pid), false);
+  } finally {
+    killGroup(child, 'SIGKILL');
+    spawnedGroups.clear();
+    rmSync(rssFile, { force: true });
+  }
 }
 async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });

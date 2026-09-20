@@ -7,7 +7,8 @@ only what the product writes or what this run itself started: `logs/observe.log`
 processes the harness spawned or that log names, each child's peak resident size as the kernel
 reports it through `/usr/bin/time -f %M`, the database and its WAL.
 
-Run on 2026-09-21 against `fb1c8bb5`, on both supported Node versions. An interactive session was
+Run on 2026-09-21 against `fb1c8bb5`, on both supported Node versions. Commits after it on this
+branch changed only the cleanup path and the harness's own self-check, not what is measured. An interactive session was
 running on the same machine; the load at the start of each run is in the table.
 
 ## What it measures
@@ -51,7 +52,7 @@ Gated checks, both runs **pass**:
   `session_end`, `last_assistant_message` and `turn_end` exactly once; spool empty.
 - `not-stuck` — `pending=0`, `liveBatches=0`, `endReason=stopped`, `workerErrors=0`, no bad end
   reason. 1,119 sources waiting and 4 parked, which is what `preset = "none"` produces.
-- `wal-recycled` — the WAL grows from 0 under the held reader (peak ≈ 28.5 MB) and is back to 0
+- `wal-recycled` — the WAL grows from 0 under the held reader (peak ≈ 29 MB) and is back to 0
   after the product's own stop path runs `wal_checkpoint(TRUNCATE)`; the check passes when the final
   size is at most a quarter of the peak. Eight (24.x) and six (22.x) `info batch` lines were logged
   while the reader was held, so the growth is a worker writing against the held snapshot rather than an idle file.
