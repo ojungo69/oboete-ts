@@ -2739,7 +2739,7 @@ What a worker costs while a reader holds the database open and capture keeps arr
 what the product writes or what the run itself started (`logs/observe.log` and the `run start pid=`
 it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, each child's peak resident
 size from `/usr/bin/time -f %M`, the database and its WAL). The receipts are
-`docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-21 against `99674c54` on
+`docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-21 against `f53bc0f6` on
 both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
@@ -2753,11 +2753,11 @@ there afterwards, with no missing, duplicate or failed-classification source and
 `session_start`, `session_end`, `last_assistant_message` and `turn_end` stored exactly once;
 `pending = 0`, `liveBatches = 0`, `endReason = stopped` with no `worker-stop` sentinel left; the WAL recycling to 0 after the product's
 own stop path runs `wal_checkpoint(TRUNCATE)`; and the observed peak `VmHWM` under 150 MiB
-(107.46 MiB and 100.86 MiB) across every process of the run — the worker from the samples, and all
+(108.23 MiB and 100.67 MiB) across every process of the run — the worker from the samples, and all
 245 children from the kernel's figure at exit, which is what carries phase A's own 1,143 hooks into
 the bound. One interval is not observed: growth in the last sample interval of the resident's life,
 since `/proc` goes with the process and the worker does not record its own peak (#307).
-Injection p99 (300.4 ms) and two session-start packs without `summary_pending` are reported rather
+Injection p99 (296.9 ms) and two session-start packs without `summary_pending` are reported rather
 than gated — they belong to the timing work.
 
 What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a
