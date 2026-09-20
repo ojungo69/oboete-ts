@@ -7,7 +7,7 @@ only what the product writes or what this run itself started: `logs/observe.log`
 processes the harness spawned or that log names, each child's peak resident size as the kernel
 reports it through `/usr/bin/time -f %M`, the database and its WAL.
 
-Run on 2026-09-21 against `81a71173`, on both supported Node versions. The harness refuses to start
+Run on 2026-09-21 against `8f4715a8`, on both supported Node versions. The harness refuses to start
 with a modified tracked file, builds the two files it runs - the launcher and the engine it imports
 - and records their digest, so the commit names what ran: both legs report `c43e809d227a3621`. An interactive session was
 running on the same machine; the load at the start of each run is in the table.
@@ -21,7 +21,7 @@ running on the same machine; the load at the start of each run is in the table.
   descendants it waits for, taken at exit rather than sampled.
 - **Phase B** runs against the resident worker the hooks spawn, and holds a read-only connection
   open for at least 20 seconds - `--hold-ms` is a floor, and the hold also carries the session-end
-  hooks and the wait for a worker batch to overlap it, so the measured holds were 24.8 s on both versions - while 20
+  hooks and the wait for a worker batch to overlap it, so the measured holds were 24.9 s on both versions - while 20
   sessions of 9 prompts each keep capturing, sampling the database size, the WAL size, the spool and
   the worker's `VmRSS`/`VmHWM` about every 250 ms, then drains, stops and samples once more.
 
@@ -33,18 +33,18 @@ the cost of generating from it. SC-009 recall is 0/40 for the same reason and is
 
 | | Node 24.16.0 | Node 22.23.1 | Bound |
 |---|---|---|---|
-| peak `VmHWM`, any process of the run | 110,680 KiB (108.09 MiB) | 103,068 KiB (100.65 MiB) | < 150 MiB |
-| worker peak `VmHWM` (phase A, from the replay) | 110,320 KiB (107.73 MiB) | 103,068 KiB (100.65 MiB) | same bound |
-| replay peak `%M` (covers its 1,143 hooks) | 110,680 KiB (108.09 MiB) | 101,828 KiB (99.44 MiB) | same bound |
-| worst of the 240 phase B hooks (`%M`) | 109,712 KiB (107.14 MiB) | 96,376 KiB (94.12 MiB) | same bound |
-| worker peak `VmHWM` (phase B, all stages) | 101,452 KiB (99.07 MiB) | 95,540 KiB (93.30 MiB) | same bound |
-| worker peak `VmHWM` (during the hold itself) | 99,908 KiB (97.57 MiB) | 93,576 KiB (91.38 MiB) | reported |
-| growth per 1,000 events | 4,832,677 bytes | 4,832,677 bytes | recorded, not gated |
-| capture hooks (phase A) | p99 174.5 ms, 100.0% ≤ 300 ms (n=717) | p99 165.2 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
-| phase B hooks | n=240, p50 211 ms, max 798 ms, none over 1 s, 0 non-zero | n=240, p50 209 ms, max 734 ms, none over 1 s, 0 non-zero | every hook exits 0 |
-| WAL during the hold | 0 → peak 29,190,232 bytes → 0 after the stop | 0 → peak 28,741,152 bytes → 0 | grows under a held reader, recycles after |
+| peak `VmHWM`, any process of the run | 110,008 KiB (107.43 MiB) | 103,172 KiB (100.75 MiB) | < 150 MiB |
+| worker peak `VmHWM` (phase A, from the replay) | 110,008 KiB (107.43 MiB) | 103,172 KiB (100.75 MiB) | same bound |
+| replay peak `%M` (covers its 1,143 hooks) | 109,896 KiB (107.32 MiB) | 102,272 KiB (99.88 MiB) | same bound |
+| worst of the 240 phase B hooks (`%M`) | 109,532 KiB (106.96 MiB) | 96,520 KiB (94.26 MiB) | same bound |
+| worker peak `VmHWM` (phase B, all stages) | 102,412 KiB (100.01 MiB) | 95,440 KiB (93.20 MiB) | same bound |
+| worker peak `VmHWM` (during the hold itself) | 100,932 KiB (98.57 MiB) | 93,536 KiB (91.34 MiB) | reported |
+| growth per 1,000 events | 4,840,472 bytes | 4,820,986 bytes | recorded, not gated |
+| capture hooks (phase A) | p99 175.0 ms, 100.0% ≤ 300 ms (n=717) | p99 160.5 ms, 100.0% ≤ 300 ms (n=717) | p99 ≤ 300 ms |
+| phase B hooks | n=240, p50 211 ms, max 896 ms, none over 1 s, 0 non-zero | n=240, p50 209 ms, max 862 ms, none over 1 s, 0 non-zero | every hook exits 0 |
+| WAL during the hold | 0 → peak 29,482,752 bytes → 0 after the stop | 0 → peak 29,408,592 bytes → 0 | grows under a held reader, recycles after |
 | spool files, highest sample or the end | 0 | 0 | 0, and the check reads the peak |
-| load average at start | 0.49 0.80 0.77 | 0.88 0.89 0.83 | — |
+| load average at start | 0.56 0.41 0.68 | 0.85 0.91 0.86 | — |
 
 Gated checks, both runs **pass**:
 
@@ -64,13 +64,13 @@ Gated checks, both runs **pass**:
   to have been processed and something to be waiting, since with no summarizer neither could be
   otherwise. The spool count includes `spool/failed/`, so an entry recovery quarantined is a
   failure rather than an empty spool.
-- `wal-recycled` — the WAL grows from 0 under the held reader (peak 29,190,232 bytes on 24.x and
-  28,741,152 on 22.x) and is back to 0
+- `wal-recycled` — the WAL grows from 0 under the held reader (peak 29,482,752 bytes on 24.x and
+  29,408,592 on 22.x) and is back to 0
   after the product's own stop path runs `wal_checkpoint(TRUNCATE)`; the check passes when the final
-  size is at most a quarter of the peak. Seven `info batch` lines on 24.x and six on 22.x were logged
+  size is at most a quarter of the peak. Seven `info batch` lines on each version were logged
   while the reader was held, so the growth is a worker writing against the held snapshot rather than an idle file.
 - `rss-bound` — peak `VmHWM` under the 150 MiB bound on both versions, across every process of the
-  run - 110,680 KiB (108.09 MiB) on 24.x and 103,068 KiB (100.65 MiB) on 22.x: the resident worker
+  run - 110,008 KiB (107.43 MiB) on 24.x and 103,172 KiB (100.75 MiB) on 22.x: the resident worker
   from the samples, and each of the 245 children from the kernel's own figure at exit (the replay,
   240 hooks, three `doctor` runs and `observe --stop`). A child that leaves no reading fails the
   check; none did. So does a resident the worker log names from the first sample onwards that no
@@ -84,13 +84,13 @@ Gated checks, both runs **pass**:
 
 Reported, not gated:
 
-- injection p99 302.7 ms on 24.x with 98.7% ≤ 300 ms (n=378) and 315.3 ms with 98.4% on 22.x; the
-  worst group is grok/`UserPromptSubmit` at p99 325.1 ms (24.x) and 345.5 ms (22.x).
-- session start: ready max 215.1 ms (24.x) and 205.1 ms (22.x), n=1; pending max 276.1 ms and
-  234.3 ms (n=48), with 46 of 48 packs carrying `summary_pending`.
+- injection p99 296.4 ms on 24.x with 98.9% ≤ 300 ms (n=378) and 290.0 ms with 99.5% on 22.x; the
+  worst group is grok/`UserPromptSubmit` at p99 339.5 ms (24.x) and 326.8 ms (22.x).
+- session start: ready max 254.0 ms (24.x) and 211.7 ms (22.x), n=1; pending max 220.9 ms and
+  218.8 ms (n=48), with 46 of 48 packs carrying `summary_pending`.
 - SC-009 recall 0/40, by construction of `preset = "none"`.
-- no phase B hook on either version ran over a second in this pair of runs: the slowest was 798 ms
-  on 24.x and 734 ms on 22.x, and all 480 exited 0. Earlier runs of this same harness did produce
+- no phase B hook on either version ran over a second in this pair of runs: the slowest was 896 ms
+  on 24.x and 862 ms on 22.x, and all 480 exited 0. Earlier runs of this same harness did produce
   one to three hooks of around three seconds, so whether they appear at all varies between runs, the
   cause is not isolated, and hook cold start is tracked in #210.
 - the phase B hook durations carry the `/usr/bin/time` wrapper's own startup, because the harness
@@ -115,7 +115,7 @@ code it ran:
 ```sh
 mkdir -p /var/tmp/oboete-t042
 ~/.nvm/versions/node/v24.16.0/bin/node scripts/measure-resources.mjs \
-  --json-out /var/tmp/oboete-t042/v29-24.16.0.json > /var/tmp/oboete-t042/v29-24.16.0.md
+  --json-out /var/tmp/oboete-t042/v30-24.16.0.json > /var/tmp/oboete-t042/v30-24.16.0.md
 echo "exit=$?"
 ```
 
@@ -125,7 +125,7 @@ keeps its temporary home and prints the path.
 
 ## Receipts
 
-`/var/tmp/oboete-t042/v29-24.16.0.{md,json,observe.log}` and `v29-22.23.1.{md,json,observe.log}`. The
+`/var/tmp/oboete-t042/v30-24.16.0.{md,json,observe.log}` and `v30-22.23.1.{md,json,observe.log}`. The
 Markdown is the harness's own report; the JSON is the same data unrounded; `observe.log` is the
 worker's log for the run, which is where `endReason`, `workerErrors` and the bad-end set are read
 from.
