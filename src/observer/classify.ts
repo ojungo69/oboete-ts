@@ -173,31 +173,39 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   let index = 0;
   let previousRunEnd = -1;
   while (index < subject.length) {
-    // The n-gram set answers the common case in constant time; only a real candidate is extended.
-    if (corpus.grams.has(subject.slice(index, index + MIN_QUOTED_RUN))) {
-      let length = MIN_QUOTED_RUN;
-      while (index + length + 1 <= subject.length
-        && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
-      // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
-      // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with
-      // `𠮸`. The run gives that half back, so what the junction keeps below is a whole character.
-      const end = subject.charCodeAt(index + length - 1);
-      if (end >= 0xD800 && end <= 0xDBFF) length -= 1;
-      // Giving that half back can leave less than a run, and a shorter coincidence is not a quote:
-      // the field keeps those characters and is scored on them, which is what the minimum is for.
-      if (length >= MIN_QUOTED_RUN) {
-        // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
-        // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
-        if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
-        index += length;
-        previousRunEnd = index;
-        continue;
-      }
+    const length = quotedRun(subject, index, corpus);
+    if (length === 0) {
+      residual += subject[index];
+      index += 1;
+      continue;
     }
-    residual += subject[index];
-    index += 1;
+    // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+    // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
+    if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
+    index += length;
+    previousRunEnd = index;
   }
   return residual;
+}
+
+/**
+ * How much of `subject` at `index` the request already carries, in UTF-16 units, or 0 when what is
+ * there is not a quoted run.
+ */
+function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number {
+  // The n-gram set answers the common case in constant time; only a real candidate is extended.
+  if (!corpus.grams.has(subject.slice(index, index + MIN_QUOTED_RUN))) return 0;
+  let length = MIN_QUOTED_RUN;
+  while (index + length + 1 <= subject.length
+    && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
+  // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
+  // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with `𠮸`.
+  // `codePointAt` answers with the pair when the unit at the end opens one, so the run gives that
+  // half back and what the caller's junction keeps is a whole character.
+  if ((subject.codePointAt(index + length - 1) ?? 0) > 0xFFFF) length -= 1;
+  // Giving that half back can leave less than a run, and a shorter coincidence is not a quote: the
+  // field keeps those characters and is scored on them, which is what the minimum is for.
+  return length >= MIN_QUOTED_RUN ? length : 0;
 }
 
 // ---------------------------------------------------------------------------
