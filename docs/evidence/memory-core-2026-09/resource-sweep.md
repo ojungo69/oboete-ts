@@ -101,12 +101,13 @@ Reported, not gated:
 
 ## How to re-run
 
-The harness runs the published bundle and needs GNU time, so build first, and give each Node version
-its own `--json-out`. The harness's own exit code is the result - 0 all gated checks passed, 1 a
-check or a hook failed, 2 the run could not be completed - so do not pipe it away:
+The harness builds the bundle it measures and needs GNU time, so there is nothing to build first;
+give each Node version its own `--json-out`. The harness's own exit code is the result - 0 all gated
+checks passed, 1 a check or a hook failed, 2 the run could not be completed - so do not pipe it
+away. It refuses to start with a modified tracked file, since the commit it records has to be the
+code it ran:
 
 ```sh
-npm run build
 mkdir -p /var/tmp/oboete-t042
 ~/.nvm/versions/node/v24.16.0/bin/node scripts/measure-resources.mjs \
   --json-out /var/tmp/oboete-t042/v26-24.16.0.json > /var/tmp/oboete-t042/v26-24.16.0.md
