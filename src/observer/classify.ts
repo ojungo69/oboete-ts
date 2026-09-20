@@ -152,16 +152,15 @@ function quotedCorpus(input: ObserverInput): QuotedCorpus {
  * removed. Shorter coincidences stay: a single shared character must not exempt a one-word title.
  *
  * Where one run ends and the next begins with nothing between them, the join is the observer's:
- * the request carries each piece but never that sentence, so a field tiled out of quoted fragments
- * would otherwise exempt itself whole. When the field kept nothing of its own, the runs that open
- * those junctions are what it is scored on — the whole run, because one character of it is nothing
- * to score when that character is punctuation, which `scriptAgrees` reads as `other`.
+ * the request carries each piece but never that sentence. Two such runs in the same script are a
+ * sentence tiled out of the request, and the second one is scored, so a field tiled out of quoted
+ * fragments cannot exempt itself whole.
  *
- * A field that kept words of its own is scored on those and the junctions are left out of it. The
- * framing the prompt asks for ("Durable facts: <the fact>") can itself match a run of the request,
- * which puts a junction in front of an honest quote; scoring that quote would fail the field the
- * exemption exists for. A field that quotes twice with words of its own between them has no
- * junction either, and neither has a field that is one quote.
+ * A junction that changes script is the other shape: the framing the prompt asks for ("Durable
+ * facts: <the fact>") can itself match a run of the request, which puts a junction in front of an
+ * honest quote in another script. Scoring that quote would fail the field the exemption exists for,
+ * so that junction is left alone. A field that quotes twice with words of its own between them has
+ * no junction either, and neither has a field that is one quote.
  */
 function unquoted(text: string, corpus: QuotedCorpus): string {
   // The worker appends the omission marker itself, so its words are nobody's answer — unless they
@@ -174,11 +173,11 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
   // every CJK character of a Japanese request would exempt a title made of it. Counted in code
   // points, because a supplementary-plane character such as `𠮷` is two UTF-16 units and
   // one coincidence.
-  if ([...subject].length > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
+  if (characterCount(subject) > 1 && corpus.texts.some((part) => part.includes(subject))) return '';
   let residual = '';
-  let junctions = '';
   let index = 0;
   let previousRunEnd = -1;
+  let previousRun = '';
   while (index < subject.length) {
     const length = quotedRun(subject, index, corpus);
     if (length === 0) {
@@ -190,11 +189,15 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       index += character.length;
       continue;
     }
-    if (index === previousRunEnd) junctions += subject.slice(index, index + length);
+    const run = subject.slice(index, index + length);
+    // The whole run, because one character of it is nothing to score when that character is
+    // punctuation, which `scriptAgrees` reads as `other`.
+    if (index === previousRunEnd && dominantScript(run) === dominantScript(previousRun)) residual += run;
     index += length;
     previousRunEnd = index;
+    previousRun = run;
   }
-  return scriptRatios(residual).letters === 0 ? residual + junctions : residual;
+  return residual;
 }
 
 /**
@@ -219,7 +222,18 @@ function quotedRun(subject: string, index: number, corpus: QuotedCorpus): number
   // Counted in characters, and after the half goes back: two supplementary characters are four
   // UTF-16 units and still a two-character coincidence. A coincidence is not a quote, so the field
   // keeps those characters and is scored on them, which is what the minimum is for.
-  return [...subject.slice(index, index + length)].length >= MIN_QUOTED_RUN ? length : 0;
+  return characterCount(subject.slice(index, index + length)) >= MIN_QUOTED_RUN ? length : 0;
+}
+
+/** How many characters `text` holds: a supplementary one is two UTF-16 units and one of them. */
+function characterCount(text: string): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    // Stepping over the low half, so the pair counts once. A half on its own counts once too.
+    if ((text.codePointAt(index) ?? 0) > 0xFFFF) index += 1;
+    count += 1;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------

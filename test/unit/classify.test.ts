@@ -415,6 +415,18 @@ test('two supplementary characters are four code units and still a coincidence',
   assert.equal(checkLanguage(inputWithHint('en', events), shared), 'mismatch');
 });
 
+test('two quoted fragments of the same script are a sentence the observer composed', () => {
+  // Every piece is the request's, the sentence is not, and a word of the field's own at the end
+  // must not buy the join an exemption: the join carries the language the gate asks about.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'the notes say 配布物の設定。色は未定。 in one place' },
+  ];
+  const tiled = output(observation({
+    title: 'Record', body: '配布物の色は未定。v2',
+  }));
+  assert.equal(checkLanguage(inputWithHint('en', events), tiled), 'mismatch');
+});
+
 test('an honest quote keeps its exemption when the framing in front of it matches a run', () => {
   // The prompt asks for framing around a declared fact, and the framing can match a run of the
   // request on its own, which puts a junction in front of the quote. The field kept words of its
