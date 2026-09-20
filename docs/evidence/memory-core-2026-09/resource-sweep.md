@@ -50,7 +50,11 @@ Gated checks, both runs **pass**:
 
 - `retained` — all 1,322 rows phase A left are still there after phase B, no missing and no
   duplicate source, no failed classification, and every session stored its `session_start`,
-  `session_end`, `last_assistant_message` and `turn_end` exactly once; spool empty.
+  `session_end`, `last_assistant_message` and `turn_end` exactly once; spool empty. A phase-A row
+  whose classification failed is counted separately from one that failed closed on the hook's own
+  300 ms budget: the first is the detector failing and fails the check, while the second is
+  `src/capture.ts` refusing to store unscanned content (FR-018) and is load-dependent - a run of
+  this pair produced one such row on 24.x and none on 22.x.
 - `not-stuck` — `pending=0`, `liveBatches=0`, `endReason=stopped` and nothing else (the run throws
   when `observe --stop` fails, so an `idle_exit` end would mean the stop path never ran),
   `workerErrors=0`, no bad end reason, and no `worker-stop` sentinel left behind: a worker that

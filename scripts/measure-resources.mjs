@@ -565,12 +565,21 @@ async function stopHomeProcesses(home) {
 // The sweep measures the cost of holding retained history, so losing that history - through
 // src/worker/purge.ts or anything else - must fail rather than look like a cheaper run.
 // A row whose classification failed carries no text, so counting its id as retained history would
-// let a phase A that lost its detector report the same 1,322 rows as one that did the work.
+// let a phase A that lost its detector report the same 1,322 rows as one that did the work. One of
+// those reasons is the product working: `deadline` means the hook's 300 ms budget ran out before
+// the detector could run, and unscanned content is never stored (FR-018, src/capture.ts). That is
+// load-dependent and is counted rather than gated; every other reason is the detector itself
+// failing, which this run has to fail on.
 function historyIds(dbPath) {
   const db = openRo(dbPath, 2_000);
   try {
-    const rows = db.prepare('SELECT id, classification_state FROM raw_events').all();
-    return { ids: rows.map((row) => String(row.id)), failed: rows.filter((row) => row.classification_state === 'failed').length };
+    const rows = db.prepare("SELECT id, classification_state, json_extract(payload_json, '$.failure_reason') AS failure_reason FROM raw_events").all();
+    const failed = rows.filter((row) => row.classification_state === 'failed');
+    return {
+      ids: rows.map((row) => String(row.id)),
+      deadline: failed.filter((row) => row.failure_reason === 'deadline').length,
+      failed: failed.filter((row) => row.failure_reason !== 'deadline').length,
+    };
   } finally { db.close(); }
 }
 function historyKept(dbPath, priorIds) {
@@ -629,7 +638,7 @@ function checkRetained(input) {
     if (good > 1) duplicate.push(marker.id);
     else if (good === 0 && bad === 0 && !marker.spool) missing.push(marker.id);
   }
-  const prior = input.prior ?? { rows: 0, kept: 0, failed: 0 };
+  const prior = input.prior ?? { rows: 0, kept: 0, failed: 0, deadline: 0 };
   const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1 || (s.failedKinds ?? []).length > 0).map((s) => s.id);
   return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows && (prior.failed ?? 0) === 0, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
 }
@@ -777,7 +786,8 @@ async function selfCheck() {
   assert.equal(procIdent(2 ** 22 + 1), null);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322 } }).pass, true);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1321 } }).pass, false);
-  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322, failed: 1 } }).pass, false, 'a row whose classification failed is not retained history');
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322, failed: 1 } }).pass, false, 'a detector that failed is not retained history');
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322, failed: 0, deadline: 3 } }).pass, true, 'a row that failed closed on the hook budget is the product working');
   assert.equal(checkNotStuck(stuckOk).pass, true);
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
@@ -861,7 +871,7 @@ function checkRows(report) {
     return ['retained', 'not-stuck', 'wal-recycled', 'rss-bound'].map((name) => [name, 'not run', err]);
   }
   return [
-    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} failed-classification=${c.retained.prior?.failed ?? 0} spoolFiles=${c.retained.spoolFiles}`],
+    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} detector-failed=${c.retained.prior?.failed ?? 0} fail-closed-on-deadline=${c.retained.prior?.deadline ?? 0} spoolFiles=${c.retained.spoolFiles}`],
     ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
     ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length} unsampled residents=${(c.rss.unsampledWorkers ?? []).length}. ${c.rss.note}`],
@@ -1019,7 +1029,7 @@ async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
   let fixtureLines = 0, commit = 'unknown';
-  let priorIds, priorFailed;
+  let priorIds, priorFailed, priorDeadline;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
@@ -1032,9 +1042,10 @@ async function runLive(cli) {
     const prior = historyIds(paths.db);
     priorIds = prior.ids;
     priorFailed = prior.failed;
+    priorDeadline = prior.deadline;
     b = await phaseB(cli, paths, env, runId, samples);
     const hits = loadHits(paths.db, paths.spool, b.markers, b.sessionIds);
-    hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds), failed: priorFailed };
+    hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds), failed: priorFailed, deadline: priorDeadline };
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
