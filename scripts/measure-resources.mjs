@@ -67,9 +67,16 @@ function gitHead() {
   return r.status === 0 ? r.stdout.trim() : 'unknown';
 }
 function loadAverage() { try { return readFileSync('/proc/loadavg', 'utf8').trim(); } catch { return 'unavailable'; } }
-function fileBytes(path) { try { return statSync(path).size; } catch { return 0; } }
+// A file that is not there yet is zero bytes; a file this run may not read is not, and reporting it
+// as zero would read as a WAL the checkpoint had recycled.
+function missing(error) { return error?.code === 'ENOENT'; }
+function fileBytes(path) {
+  try { return statSync(path).size; } catch (error) { if (missing(error)) return 0; throw error; }
+}
 function spoolCount(dir) {
-  try { return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')).length; } catch { return 0; }
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.json')).length;
+  } catch (error) { if (missing(error)) return 0; throw error; }
 }
 function isBusy(error) {
   if (error === null || typeof error !== 'object') return false;
@@ -452,7 +459,7 @@ function groupMembers(pgid) {
   let names = [];
   try { names = readdirSync('/proc'); } catch { return members; }
   for (const name of names) {
-    if (!/^[0-9]+$/.test(name)) continue;
+    if (!/^\d+$/.test(name)) continue;
     let text = '';
     try { text = readFileSync(`/proc/${name}/stat`, 'utf8'); } catch { continue; }
     if (Number(text.slice(text.lastIndexOf(')') + 1).trim().split(' ')[2]) === pgid) members.push(Number(name));
@@ -528,7 +535,7 @@ function loadHits(dbPath, spoolDir, markers, sessionIds) {
 }
 function parseGeneration(reason) {
   const n = (re) => { const m = reason.match(re); return m === null ? Number.NaN : Number(m[1]); };
-  return { pending: n(/(\d+) pending/), waiting: n(/(\d+) waiting/), parked: n(/(\d+) parked/), legacy: n(/(\d+) legacy sources held/), processed: n(/(\d+) processed/) };
+  return { pending: n(/(\d{1,9}) pending/), waiting: n(/(\d{1,9}) waiting/), parked: n(/(\d{1,9}) parked/), legacy: n(/(\d{1,9}) legacy sources held/), processed: n(/(\d{1,9}) processed/) };
 }
 function checkRetained(input) {
   const missing = []; const duplicate = []; const failed = [];
@@ -546,7 +553,13 @@ function checkRetained(input) {
   return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
 }
 function checkNotStuck(input) {
-  return { name: 'not-stuck', pass: input.pending === 0 && input.spoolFiles === 0 && input.liveBatches === 0 && input.workerErrors === 0 && (input.badEnds ?? []).length === 0 && (input.endReason === 'stopped' || input.endReason === 'idle_exit'), ...input, note: 'with preset none, work moves to waiting as deferred no_provider' };
+  // The run makes `observe --stop` succeed or throws, so `stopped` is the only end it demands, and
+  // the sentinel it wrote must be gone: `src/worker/observe.ts` keeps a sentinel it could not
+  // remove and says so in the log, and the next worker would stop on it.
+  const pass = input.pending === 0 && input.spoolFiles === 0 && input.liveBatches === 0
+    && input.workerErrors === 0 && (input.badEnds ?? []).length === 0
+    && input.endReason === 'stopped' && input.stopMarker === false;
+  return { name: 'not-stuck', pass, ...input, note: 'with preset none, work moves to waiting as deferred no_provider' };
 }
 function checkWal(input) {
   const grew = input.peak > input.start;
@@ -567,7 +580,9 @@ function checkRss(input) {
 // The wrapper is the group leader and the product's command runs inside that group; if a signal
 // reached only the leader, an aborted run would leave the command behind.
 async function groupKillCheck() {
-  if (!existsSync(TIME_BIN)) return;
+  // The run refuses to start without this binary, so a self-check that skipped itself here would
+  // report green having proved none of the three cases below.
+  if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
   const scratch = mkdtempSync(join(tmpdir(), 'oboete-t042-selfcheck-'));
   const started = [];
   const wrap = (name, ...command) => {
@@ -620,7 +635,7 @@ async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
   const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
-  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 1, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', workerErrors: 0, badEnds: [] };
+  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 1, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
   assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
   const mixed = checkRetained({ markers: [hit('miss', 'done', 0), hit('dup', 'done', 2)], sessions: sess, spoolFiles: 0 });
   assert.equal(mixed.pass, false); assert.deepEqual(mixed.missing, ['miss']); assert.deepEqual(mixed.duplicate, ['dup']);
@@ -647,6 +662,8 @@ async function selfCheck() {
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, badEnds: ['batch_error'] }).pass, false);
+  assert.equal(checkNotStuck({ ...stuckOk, stopMarker: true }).pass, false);
+  assert.equal(checkNotStuck({ ...stuckOk, endReason: 'idle_exit' }).pass, false);
   assert.equal(countBatchLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0, Date.now()), 0);
   assert.equal(countErrorLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0), 1);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=1 reason=batch_error\n', 0), ['batch_error']);
@@ -667,7 +684,7 @@ async function selfCheck() {
   assert.equal(parseRss(''), 0);
   await groupKillCheck();
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
-  assert.equal((('kept home=/h repo=/tmp/oboete-t068-repo-abc\n').match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1], '/tmp/oboete-t068-repo-abc');
+  assert.equal(/^kept home=\S+ repo=(\S+)\s*$/m.exec('kept home=/h repo=/tmp/oboete-t068-repo-abc\n')?.[1], '/tmp/oboete-t068-repo-abc');
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
   const a0 = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '', repoSource: '' };
   const md = renderMarkdown({ checks: null, error: 'held-batch', failed: true, startedAt: '', node: '', commit: '', fixture: '', fixtureLines: 0, loadAtStart: '', sessions: 1, prompts: 1, holdMs: 1, phaseA: a0, phaseB: { samples: [], hooks: [], hookErrors: [], stopMarker: false, exitReason: null } });
@@ -696,8 +713,10 @@ function replayGates(json) {
   if (typeof rssKb !== 'number' || !Number.isFinite(rssKb)) throw new HarnessError('phase A replay JSON worker.rssKb is not a number');
   return { gated, failed, notGated, rssKb, bounds: json.bounds ?? [] };
 }
+function mdRow(cells) { return `| ${cells.join(' | ')} |`; }
 function mdTable(headers, rows) {
-  return `| ${headers.join(' | ')} |\n|${headers.map(() => '---').join('|')}|\n${rows.map((row) => `| ${row.join(' | ')} |`).join('\n')}`;
+  const rule = `|${headers.map(() => '---').join('|')}|`;
+  return [mdRow(headers), rule, ...rows.map(mdRow)].join('\n');
 }
 function kibToMib(kib) { return (kib / 1024).toFixed(3); }
 function checkRows(report) {
@@ -708,7 +727,7 @@ function checkRows(report) {
   }
   return [
     ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} spoolFiles=${c.retained.spoolFiles}`],
-    ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
+    ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
     ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length}. ${c.rss.note}`],
   ];
@@ -727,7 +746,9 @@ function renderMarkdown(report) {
   const hookFail = failedHooks.length === 0 ? '' : mdTable(['event', 'session', 'status', 'ms'], failedHooks.map((h) => [h.event, String(h.session ?? ''), h.timedOut ? 'timeout' : String(h.status), String(h.ms)]));
   const pids = pidRows.length === 0 ? 'No processes sampled.' : mdTable(['pid', 'first VmRSS', 'last VmRSS', 'n', 'max VmHWM', 'role'], pidRows);
   const stopNote = b.stopMarker ? `still present; doctor worker: ${report.workerReason ?? 'unread'}; harness did not clear it` : 'cleared by the product resident on stopped';
-  const closing = report.error !== undefined ? `Harness error: ${report.error} Exit 2.` : report.failed ? 'One or more checks failed. Exit 1.' : 'Every listed check passed on this run.';
+  let closing = 'Every listed check passed on this run.';
+  if (report.error !== undefined) closing = `Harness error: ${report.error} Exit 2.`;
+  else if (report.failed) closing = 'One or more checks failed. Exit 1.';
   return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\` (${a.repoSource}). Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
 }
 async function phaseA(cli, paths, env) {
@@ -791,6 +812,33 @@ async function phaseB(cli, paths, env, runId, samples) {
     sampler.stop();
   }
 }
+// The temporary home, its bin with the node the product's hooks find on PATH, and the directory the
+// wrappers write their RSS into.
+function prepareIsolation(cli) {
+  if (!existsSync(cli.fixture)) throw new HarnessError(`fixture file not found: ${cli.fixture}`);
+  if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
+  if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
+  const root = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
+  const paths = {
+    root, userHome: join(root, 'home'), oboeteHome: join(root, 'oboete'),
+    tmp: join(root, 'tmp'), repo: '', db: join(root, 'oboete', 'memory.db'), spool: join(root, 'oboete', 'spool'),
+    bin: join(root, 'bin'),
+  };
+  rssDir = join(root, 'rss');
+  for (const dir of [paths.userHome, paths.tmp, paths.bin, rssDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  symlinkSync(process.execPath, join(paths.bin, 'node'));
+  writeConfig(paths.oboeteHome);
+  return paths;
+}
+function buildChecks({ a, b, hits, doctor, paths, samples }) {
+  return {
+    retained: checkRetained(hits),
+    notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: spoolCount(paths.spool), liveBatches: liveBatches(paths.db),
+      endReason: b.exitReason, workerErrors: b.workerErrors, badEnds: b.badEnds, stopMarker: b.stopMarker }),
+    wal: checkWal({ start: b.walStart, peak: b.walPeak, final: b.walFinal, batchesHeld: b.batchesHeld }),
+    rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks }),
+  };
+}
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
@@ -799,19 +847,8 @@ async function runLive(cli) {
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
   try {
-    if (!existsSync(cli.fixture)) throw new HarnessError(`fixture file not found: ${cli.fixture}`);
-    if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
-    if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
-    isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
-    paths = {
-      root: isolation, userHome: join(isolation, 'home'), oboeteHome: join(isolation, 'oboete'),
-      tmp: join(isolation, 'tmp'), repo: '', db: join(isolation, 'oboete', 'memory.db'), spool: join(isolation, 'oboete', 'spool'),
-      bin: join(isolation, 'bin'),
-    };
-    rssDir = join(isolation, 'rss');
-    for (const dir of [paths.userHome, paths.tmp, paths.bin, rssDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    symlinkSync(process.execPath, join(paths.bin, 'node'));
-    writeConfig(paths.oboeteHome);
+    paths = prepareIsolation(cli);
+    isolation = paths.root;
     const env = childEnv(paths);
     a = await phaseA(cli, paths, env);
     priorIds = historyIds(paths.db);
@@ -820,18 +857,13 @@ async function runLive(cli) {
     hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds) };
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
-    checks = {
-      retained: checkRetained(hits),
-      notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: spoolCount(paths.spool), liveBatches: liveBatches(paths.db),
-        endReason: b.exitReason, workerErrors: b.workerErrors, badEnds: b.badEnds }),
-      wal: checkWal({ start: b.walStart, peak: b.walPeak, final: b.walFinal, batchesHeld: b.batchesHeld }),
-      rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks }),
-    };
+    checks = buildChecks({ a, b, hits, doctor, paths, samples });
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
     const message = err instanceof Error ? err.message : String(err);
-    error = err instanceof HarnessError ? message : `unexpected ${err instanceof Error ? err.name : 'error'}: ${message}`;
+    const name = err instanceof Error ? err.name : 'error';
+    error = err instanceof HarnessError ? message : `unexpected ${name}: ${message}`;
     process.stderr.write(`${error}\n`);
   } finally {
     if (isolation !== undefined) {
@@ -867,9 +899,12 @@ async function main(argv) {
     writeFileSync(cli.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
   }
   cleanupHome(cli, report);
-  return report.error !== undefined ? 2 : report.failed ? 1 : 0;
+  if (report.error !== undefined) return 2;
+  return report.failed ? 1 : 0;
 }
-main(process.argv.slice(2)).then((code) => { process.exit(code); }).catch((error) => {
+try {
+  process.exit(await main(process.argv.slice(2)));
+} catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
-});
+}
