@@ -344,6 +344,18 @@ test('a field that is only the omission marker is the provider\'s own words', ()
   assert.equal(checkLanguage(inputWithHint('ja', events), trimmed), 'ok');
 });
 
+test('a field tiled out of two quotes keeps a whole character at the junction', () => {
+  // The junction leaves one character of the field in the residual so the join can be scored. Half
+  // of a surrogate pair is not one: `dominantScript` reads a lone surrogate as `other`, which
+  // agrees with every hint.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'The record says 日本語文 in one place' },
+    { id: 'e2', kind: 'prompt', text: 'and 𠮷配布物 in another.' },
+  ];
+  const joined = output(observation({ title: 'Record', body: '日本語文𠮷配布物' }));
+  assert.equal(checkLanguage(inputWithHint('en', events), joined), 'mismatch');
+});
+
 test('a supplementary-plane character is one coincidence, not a quote', () => {
   // `𠮷` is two UTF-16 units and one character, so a length in units let it past the guard that
   // exists to stop a single shared character from exempting a field made of it.

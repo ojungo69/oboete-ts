@@ -178,7 +178,9 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       let length = MIN_QUOTED_RUN;
       while (index + length + 1 <= subject.length
         && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
-      if (index === previousRunEnd) residual += subject[index];
+      // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+      // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
+      if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
       index += length;
       previousRunEnd = index;
       continue;
