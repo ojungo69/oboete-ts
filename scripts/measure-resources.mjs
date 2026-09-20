@@ -86,6 +86,15 @@ function requireCleanTree() {
   if (dirty.length > 0) {
     throw new HarnessError(`the working tree has ${dirty.length} modified tracked file(s), so a receipt naming ${gitHead()} would not be a receipt of what ran: ${dirty.slice(0, 3).map((line) => line.slice(3)).join(', ')}`);
   }
+  // An untracked file is not a modification, but `src` imports its own modules with an explicit
+  // `.js` suffix, so an untracked `src/x.js` beside the tracked `src/x.ts` is what the bundler
+  // resolves: the run would measure it while the commit still looked clean.
+  const others = git('ls-files', '--others', '--exclude-standard', '--', 'src');
+  if (others.status !== 0) throw new HarnessError(`git ls-files failed: ${(others.stderr ?? '').trim() || 'unknown error'}`);
+  const untracked = others.stdout.split('\n').filter((line) => line !== '');
+  if (untracked.length > 0) {
+    throw new HarnessError(`src has ${untracked.length} untracked file(s) the build would resolve ahead of the tracked source: ${untracked.slice(0, 3).join(', ')}`);
+  }
 }
 function bundleDigest() {
   try {
@@ -1093,7 +1102,11 @@ async function runLive(cli) {
 function cleanupHome(cli, report) {
   if (report.home === undefined) return;
   if (cli.keep || report.failed) { process.stderr.write(`kept ${report.home}\n`); return; }
-  rmSync(report.home, { recursive: true, force: true });
+  // The receipts are already written and already say the run passed. A delete that throws here
+  // would end the process at exit 2 over a home it could not remove, contradicting them, so a
+  // failed delete is reported the way a kept home is and the exit code is left alone.
+  try { rmSync(report.home, { recursive: true, force: true }); }
+  catch (err) { process.stderr.write(`kept ${report.home}: ${errText(err)}\n`); }
 }
 async function main(argv) {
   const cli = parseCli(argv);
