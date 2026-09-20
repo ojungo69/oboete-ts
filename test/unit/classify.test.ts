@@ -455,6 +455,21 @@ test('words of the field\u2019s own end the chain, so the framing after them is 
   assert.equal(checkLanguage(inputWithHint('en', events), framed), 'ok');
 });
 
+test('a separator run after the field\u2019s own words starts a new chain', () => {
+  // The prose between the first quote and the separator ends the chain, so the quote after the
+  // separator is a quote of its own and not the tail of a tiling.
+  const events = [
+    { id: 'e1', kind: 'prompt', text: 'Please retain each supplied value exactly. Keep all items independent in the record.' },
+    { id: 'e2', kind: 'prompt', text: '\u914d\u5e03\u5148\u306f' },
+    { id: 'e3', kind: 'prompt', text: '----' },
+    { id: 'e4', kind: 'prompt', text: '\u672c\u756a\u74b0\u5883\u3067\u3059' },
+  ];
+  const spaced = output(observation({
+    title: 'Record', body: '\u914d\u5e03\u5148\u306f and ----\u672c\u756a\u74b0\u5883\u3067\u3059',
+  }));
+  assert.equal(checkLanguage(inputWithHint('en', events), spaced), 'ok');
+});
+
 test('an identifier quoted between two fragments does not make the chain framing', () => {
   // Each junction on its own changes script, but the chain holds Japanese on both sides of the
   // identifier: the sentence is still assembled out of three fields the request never wrote joined.
