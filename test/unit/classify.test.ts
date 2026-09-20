@@ -364,6 +364,15 @@ test('a field tiled out of two quotes keeps a whole character at the junction', 
   ];
   const across = output(observation({ title: 'Record', body: '配布色は𠮸琥珀である' }));
   assert.equal(checkLanguage(inputWithHint('en', shared), across), 'mismatch');
+
+  // Giving the half back can leave three characters where four were matched, and three is a
+  // coincidence: the field keeps them and is scored on what is left.
+  const short = [
+    { id: 'e1', kind: 'prompt', text: '記録: abc𠮷' },
+    { id: 'e2', kind: 'prompt', text: '別の記録: 𠮸de' },
+  ];
+  const tiled = output(observation({ title: '記録', body: 'abc𠮸de' }));
+  assert.equal(checkLanguage(inputWithHint('ja', short), tiled), 'mismatch');
 });
 
 test('a supplementary-plane character is one coincidence, not a quote', () => {

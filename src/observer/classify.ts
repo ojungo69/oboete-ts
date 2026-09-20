@@ -183,12 +183,16 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       // `𠮸`. The run gives that half back, so what the junction keeps below is a whole character.
       const end = subject.charCodeAt(index + length - 1);
       if (end >= 0xD800 && end <= 0xDBFF) length -= 1;
-      // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
-      // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
-      if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
-      index += length;
-      previousRunEnd = index;
-      continue;
+      // Giving that half back can leave less than a run, and a shorter coincidence is not a quote:
+      // the field keeps those characters and is scored on them, which is what the minimum is for.
+      if (length >= MIN_QUOTED_RUN) {
+        // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
+        // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
+        if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);
+        index += length;
+        previousRunEnd = index;
+        continue;
+      }
     }
     residual += subject[index];
     index += 1;
