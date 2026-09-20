@@ -564,12 +564,17 @@ async function stopHomeProcesses(home) {
 }
 // The sweep measures the cost of holding retained history, so losing that history - through
 // src/worker/purge.ts or anything else - must fail rather than look like a cheaper run.
+// A row whose classification failed carries no text, so counting its id as retained history would
+// let a phase A that lost its detector report the same 1,322 rows as one that did the work.
 function historyIds(dbPath) {
   const db = openRo(dbPath, 2_000);
-  try { return db.prepare('SELECT id FROM raw_events').all().map((row) => String(row.id)); } finally { db.close(); }
+  try {
+    const rows = db.prepare('SELECT id, classification_state FROM raw_events').all();
+    return { ids: rows.map((row) => String(row.id)), failed: rows.filter((row) => row.classification_state === 'failed').length };
+  } finally { db.close(); }
 }
 function historyKept(dbPath, priorIds) {
-  const now = new Set(historyIds(dbPath));
+  const now = new Set(historyIds(dbPath).ids);
   return priorIds.filter((id) => now.has(id)).length;
 }
 function liveBatches(dbPath) {
@@ -624,9 +629,9 @@ function checkRetained(input) {
     if (good > 1) duplicate.push(marker.id);
     else if (good === 0 && bad === 0 && !marker.spool) missing.push(marker.id);
   }
-  const prior = input.prior ?? { rows: 0, kept: 0 };
+  const prior = input.prior ?? { rows: 0, kept: 0, failed: 0 };
   const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1 || (s.failedKinds ?? []).length > 0).map((s) => s.id);
-  return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
+  return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows && (prior.failed ?? 0) === 0, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
 }
 function checkNotStuck(input) {
   // The run makes `observe --stop` succeed or throws, so `stopped` is the only end it demands, and
@@ -670,7 +675,9 @@ async function groupKillCheck() {
   const started = [];
   const wrap = (name, ...command) => {
     const child = spawn(TIME_BIN, ['-f', '%M', '-o', join(scratch, `${name}.txt`), '--', process.execPath, ...command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    started.push(child);
+    // The identity goes with the child: this cleanup runs seconds after the first wrapper was
+    // killed, by which time its group number can belong to somebody else.
+    started.push({ child, ident: procIdent(child.pid ?? 0) });
     return child;
   };
   const gone = async (pid) => {
@@ -734,7 +741,7 @@ async function groupKillCheck() {
     assert.equal(timedOutRun.timedOut, true, 'a command that ignores SIGTERM still ends its own call');
     assert.deepEqual(pidsInHome(scratch), [], 'the timeout leaves nothing of that command behind');
   } finally {
-    for (const child of started) { killGroup(child, 'SIGKILL'); killMembers(child.pid ?? 0, 'SIGKILL'); }
+    for (const { child, ident } of started) { killGroup(child, 'SIGKILL', ident ?? undefined); killMembers(child.pid ?? 0, 'SIGKILL'); }
     await stopHomeProcesses(scratch);
     ownPids.clear();
     groupSurvivors.clear();
@@ -770,6 +777,7 @@ async function selfCheck() {
   assert.equal(procIdent(2 ** 22 + 1), null);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322 } }).pass, true);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1321 } }).pass, false);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322, failed: 1 } }).pass, false, 'a row whose classification failed is not retained history');
   assert.equal(checkNotStuck(stuckOk).pass, true);
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
@@ -853,7 +861,7 @@ function checkRows(report) {
     return ['retained', 'not-stuck', 'wal-recycled', 'rss-bound'].map((name) => [name, 'not run', err]);
   }
   return [
-    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} spoolFiles=${c.retained.spoolFiles}`],
+    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} failed-classification=${c.retained.prior?.failed ?? 0} spoolFiles=${c.retained.spoolFiles}`],
     ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
     ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length} unsampled residents=${(c.rss.unsampledWorkers ?? []).length}. ${c.rss.note}`],
@@ -959,6 +967,14 @@ function buildBundles() {
     throw new HarnessError(`the build this run measures failed (${r.status}): ${((r.stderr ?? '') + (r.stdout ?? '')).trim().split('\n').slice(-1)[0] || 'no output'}`);
   }
 }
+// The commit is taken before the build, and checked again once the measuring is done: HEAD can move
+// under a run that takes several minutes, and a receipt naming the revision the tree happened to be
+// on at the end would not be a receipt of the bundle that ran.
+function requireSameRevision(commit) {
+  requireCleanTree();
+  const now = gitHead();
+  if (now !== commit) throw new HarnessError(`HEAD moved from ${commit} to ${now} during the run, so the bundle measured is not this revision's`);
+}
 function requireInputs(cli) {
   // Counted here rather than beside the report: this runs inside the try, so a fixture that is a
   // directory, or one that becomes unreadable during the several minutes of a run, is a failure
@@ -969,11 +985,12 @@ function requireInputs(cli) {
   }
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
   requireCleanTree();
+  const commit = gitHead();
   buildBundles();
   for (const file of [BUNDLE, ENGINE]) {
     if (!existsSync(file)) throw new HarnessError(`the build produced no ${file}`);
   }
-  return lines;
+  return { lines, commit };
 }
 // `root` is created by the caller, so a failure part way through still leaves it a home to keep and
 // a path to print.
@@ -1001,24 +1018,27 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
-  let fixtureLines = 0;
-  let priorIds;
+  let fixtureLines = 0, commit = 'unknown';
+  let priorIds, priorFailed;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
-    fixtureLines = requireInputs(cli);
+    ({ lines: fixtureLines, commit } = requireInputs(cli));
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = prepareIsolation(isolation);
     const env = childEnv(paths);
     a = await phaseA(cli, paths, env);
-    priorIds = historyIds(paths.db);
+    const prior = historyIds(paths.db);
+    priorIds = prior.ids;
+    priorFailed = prior.failed;
     b = await phaseB(cli, paths, env, runId, samples);
     const hits = loadHits(paths.db, paths.spool, b.markers, b.sessionIds);
-    hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds) };
+    hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds), failed: priorFailed };
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
+    requireSameRevision(commit);
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
@@ -1042,7 +1062,7 @@ async function runLive(cli) {
   if (error === undefined && logError !== undefined) error = logError;
   const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
-    startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), bundleSha256: bundleDigest(), fixture: cli.fixture, fixtureLines,
+    startedAt, node: `${process.execPath} (${process.version})`, commit, bundleSha256: bundleDigest(), fixture: cli.fixture, fixtureLines,
     loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
     home: isolation,
   };
