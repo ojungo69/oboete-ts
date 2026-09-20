@@ -418,8 +418,8 @@ writers require separate worktrees. No deployment follows merely from an increme
 - T042 (open, 2026-09-20): the retained-history resource sweep is measured and recorded; the scale legs
   and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
   temporary home and reads only what the product writes or what the run itself started, in two phases: a replay of
-  `test/fixtures/events-1000.jsonl` through the real hooks and the resident worker, then a hold of a
-  read-only connection of at least 20 seconds (25.4 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
+  `test/fixtures/events-1000.jsonl` through the real hooks and 38 one-shot worker runs, then, against
+  the resident worker, a hold of a read-only connection of at least 20 seconds (25.4 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
   24.16.0 and 22.23.1 — no missing, duplicate or failed-classification source; `pending=0`,
   `liveBatches=0`, `endReason=stopped`; the WAL recycling to 0 after `wal_checkpoint(TRUNCATE)`; and
   peak `VmHWM` under 150 MiB. Injection p99 (283.7 ms), the two session-start packs without

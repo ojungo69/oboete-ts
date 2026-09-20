@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const BUNDLE = join(ROOT, 'dist', 'oboete.mjs');
 const CONFIG = '[observer]\npreset = "none"\n\n[worker]\nidle_exit_ms = 60000\n';
-const SAMPLE_MS = 250, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
+const SAMPLE_MS = 250, CHILD_SAMPLE_MS = 25, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
 const HOOK_TIMEOUT_MS = 15_000, REPLAY_TIMEOUT_MS = 40 * 60_000;
 const PENDING_TIMEOUT_MS = 3 * 60_000, STOPPED_TIMEOUT_MS = 2 * 60_000, BATCH_WAIT_MS = 60_000, DOCTOR_POLL_MS = 5_000;
 const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
@@ -22,6 +22,7 @@ const STAGES = ['hold', 'drain', 'stop', 'final'];
 const SESSION_KINDS = ['session_start', 'session_end', 'last_assistant_message', 'turn_end'];
 const CLOCK_TICK = clockTick();
 const ownPids = new Map();
+const childPeaks = [];
 const loggedPids = new Set();
 const WORKER_LOG_LAG_MS = 60_000;
 let bootAt;
@@ -190,18 +191,24 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
       cwd, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     adopt(child.pid, false);
+    // The home sampler ticks every 250 ms and a hook runs for about 200: without watching each child
+    // the bound would hold only for the processes a tick happened to catch.
+    let peakKb = 0;
+    const watch = setInterval(() => { const vm = readVm(child.pid); if (vm !== null) peakKb = Math.max(peakKb, vm.hwmKb); }, CHILD_SAMPLE_MS);
     let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => { stderr += chunk; if (inheritStderr === true) process.stderr.write(chunk); });
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); }, timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+    child.on('error', (error) => { clearTimeout(timer); clearInterval(watch); reject(error); });
     child.stdin?.on('error', () => {});
     if (stdin !== undefined) child.stdin?.end(stdin);
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      resolvePromise({ status, signal, stdout, stderr, timedOut, ms: Date.now() - t0 });
+      clearInterval(watch);
+      childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb: peakKb });
+      resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb: peakKb, ms: Date.now() - t0 });
     });
   });
 }
@@ -375,6 +382,16 @@ async function stopHomeProcesses(home) {
   while (Date.now() < deadline && pidsInHome(home).length > 0) await sleep(100);
   signalAll('SIGKILL');
 }
+// The sweep measures the cost of holding retained history, so losing that history - through
+// src/worker/purge.ts or anything else - must fail rather than look like a cheaper run.
+function historyIds(dbPath) {
+  const db = openRo(dbPath, 2_000);
+  try { return db.prepare('SELECT id FROM raw_events').all().map((row) => String(row.id)); } finally { db.close(); }
+}
+function historyKept(dbPath, priorIds) {
+  const now = new Set(historyIds(dbPath));
+  return priorIds.filter((id) => now.has(id)).length;
+}
 function liveBatches(dbPath) {
   try { const db = openRo(dbPath, 2_000); try { return Number(db.prepare("SELECT COUNT(*) AS n FROM observation_batches WHERE state IN ('pending', 'running')").get()?.n ?? 0); } finally { db.close(); } } catch { return -1; }
 }
@@ -427,8 +444,9 @@ function checkRetained(input) {
     if (good > 1) duplicate.push(marker.id);
     else if (good === 0 && bad === 0 && !marker.spool) missing.push(marker.id);
   }
+  const prior = input.prior ?? { rows: 0, kept: 0 };
   const sessionFail = input.sessions.filter((s) => s.starts !== 1 || s.ends !== 1 || s.messages !== 1 || s.turnEnds !== 1 || (s.failedKinds ?? []).length > 0).map((s) => s.id);
-  return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0, missing, duplicate, failed, sessionFail, spoolFiles: input.spoolFiles };
+  return { name: 'retained', pass: missing.length === 0 && duplicate.length === 0 && failed.length === 0 && sessionFail.length === 0 && prior.kept === prior.rows, missing, duplicate, failed, sessionFail, prior, spoolFiles: input.spoolFiles };
 }
 function checkNotStuck(input) {
   return { name: 'not-stuck', pass: input.pending === 0 && input.spoolFiles === 0 && input.liveBatches === 0 && input.workerErrors === 0 && (input.badEnds ?? []).length === 0 && (input.endReason === 'stopped' || input.endReason === 'idle_exit'), ...input, note: 'with preset none, work moves to waiting as deferred no_provider' };
@@ -438,8 +456,16 @@ function checkWal(input) {
   return { name: 'wal-recycled', pass: grew && input.final <= input.peak * WAL_FRACTION, ...input, grew, fraction: WAL_FRACTION };
 }
 function checkRss(input) {
-  const maxHwm = Math.max(input.phaseAHwmKb, input.phaseB.reduce((m, p) => Math.max(m, p.maxHwm), 0));
-  return { name: 'rss-bound', pass: maxHwm <= RSS_BOUND_KIB, maxHwm, ...input, boundKib: RSS_BOUND_KIB, note: "20-second window cannot show long-run growth; that is issue #268's seven-day run" };
+  const children = input.children ?? [];
+  const childMax = children.reduce((m, c) => Math.max(m, c.hwmKb), 0);
+  // A child with no reading at all is an unmeasured process, not a small one.
+  const unmeasured = children.filter((c) => c.hwmKb === 0).map((c) => c.command);
+  const maxHwm = Math.max(input.phaseAHwmKb, input.phaseB.reduce((m, p) => Math.max(m, p.maxHwm), 0), childMax);
+  return {
+    name: 'rss-bound', pass: maxHwm <= RSS_BOUND_KIB && unmeasured.length === 0, maxHwm, ...input,
+    childMax, childCount: children.length, unmeasured, boundKib: RSS_BOUND_KIB,
+    note: "20-second window cannot show long-run growth; that is issue #268's seven-day run",
+  };
 }
 function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
@@ -466,6 +492,8 @@ function selfCheck() {
   assert.equal(startedBefore(process.pid, Number.NaN), false);
   assert.equal(typeof procIdent(process.pid), 'string');
   assert.equal(procIdent(2 ** 22 + 1), null);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322 } }).pass, true);
+  assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1321 } }).pass, false);
   assert.equal(checkNotStuck(stuckOk).pass, true);
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
@@ -482,6 +510,9 @@ function selfCheck() {
   assert.equal(checkRss({ phaseAHwmKb: 12_000, phaseB: pid(13_000) }).pass, true);
   assert.equal(checkRss({ phaseAHwmKb: 151 * 1024, phaseB: pid(100) }).pass, false);
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(151 * 1024) }).pass, false);
+  assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 151 * 1024 }] }).pass, false);
+  assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 0 }] }).pass, false);
+  assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 1_000 }] }).pass, true);
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
   assert.equal((('kept home=/h repo=/tmp/oboete-t068-repo-abc\n').match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1], '/tmp/oboete-t068-repo-abc');
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
@@ -523,10 +554,10 @@ function checkRows(report) {
     return ['retained', 'not-stuck', 'wal-recycled', 'rss-bound'].map((name) => [name, 'not run', err]);
   }
   return [
-    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} spoolFiles=${c.retained.spoolFiles}`],
+    ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} spoolFiles=${c.retained.spoolFiles}`],
     ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
-    ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB. ${c.rss.note}`],
+    ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length}. ${c.rss.note}`],
   ];
 }
 function renderMarkdown(report) {
@@ -610,6 +641,7 @@ async function phaseB(cli, paths, env, runId, samples) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
+  let priorIds = [];
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '', repoSource: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
@@ -627,8 +659,10 @@ async function runLive(cli) {
     writeConfig(paths.oboeteHome);
     const env = childEnv(paths);
     a = await phaseA(cli, paths, env);
+    priorIds = historyIds(paths.db);
     b = await phaseB(cli, paths, env, runId, samples);
     const hits = loadHits(paths.db, paths.spool, b.markers, b.sessionIds);
+    hits.prior = { rows: priorIds.length, kept: historyKept(paths.db, priorIds) };
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = {
@@ -636,11 +670,13 @@ async function runLive(cli) {
       notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: spoolCount(paths.spool), liveBatches: liveBatches(paths.db),
         endReason: b.exitReason, workerErrors: b.workerErrors, badEnds: b.badEnds }),
       wal: checkWal({ start: b.walStart, peak: b.walPeak, final: b.walFinal, batchesHeld: b.batchesHeld }),
-      rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples) }),
+      rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks }),
     };
   } catch (err) {
-    if (!(err instanceof HarnessError)) throw err;
-    error = err.message;
+    // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
+    // so it becomes a report rather than a stack trace over a deleted home.
+    const message = err instanceof Error ? err.message : String(err);
+    error = err instanceof HarnessError ? message : `unexpected ${err instanceof Error ? err.name : 'error'}: ${message}`;
     process.stderr.write(`${error}\n`);
   } finally {
     if (isolation !== undefined) {
@@ -649,7 +685,6 @@ async function runLive(cli) {
         logError = `could not save the worker log beside --json-out: ${err instanceof Error ? err.message : String(err)}`;
         process.stderr.write(`${logError}\n`);
       }
-      if (cli.keep || logError !== undefined) process.stderr.write(`kept ${isolation}\n`); else rmSync(isolation, { recursive: true, force: true });
     }
   }
   const failed = error !== undefined || logError !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
@@ -657,7 +692,15 @@ async function runLive(cli) {
     startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), fixture: cli.fixture,
     fixtureLines: existsSync(cli.fixture) ? readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length : 0,
     loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
+    home: isolation,
   };
+}
+// The home outlives the receipts: a failed run keeps it, and a clean one is deleted only once its
+// markdown and JSON are on disk.
+function cleanupHome(cli, report) {
+  if (report.home === undefined) return;
+  if (cli.keep || report.failed) { process.stderr.write(`kept ${report.home}\n`); return; }
+  rmSync(report.home, { recursive: true, force: true });
 }
 async function main(argv) {
   const cli = parseCli(argv);
@@ -668,6 +711,7 @@ async function main(argv) {
     mkdirSync(dirname(cli.jsonOut), { recursive: true });
     writeFileSync(cli.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
   }
+  cleanupHome(cli, report);
   return report.error !== undefined ? 2 : report.failed ? 1 : 0;
 }
 main(process.argv.slice(2)).then((code) => { process.exit(code); }).catch((error) => {

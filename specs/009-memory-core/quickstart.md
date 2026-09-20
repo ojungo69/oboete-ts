@@ -2742,7 +2742,7 @@ The receipts are `docs/evidence/memory-core-2026-09/resource-sweep.md`; the run 
 against `2b633dab` on both supported Node versions.
 
 Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
-the resident worker, then a hold of a read-only connection of at least 20 seconds (25.4 s and 26.8 s
+38 one-shot worker runs, then, against the resident worker, a hold of a read-only connection of at least 20 seconds (25.4 s and 26.8 s
 measured, the rest being the session-end hooks and the wait for a batch to overlap the hold) while
 20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and again after the drain and
 stop.

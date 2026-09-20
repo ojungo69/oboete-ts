@@ -11,9 +11,11 @@ running on the same machine; the load at the start of each run is in the table.
 
 ## What it measures
 
-- **Phase A** replays `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and the
-  resident worker, with `[observer] preset = "none"`, and reads the replay's own bounds.
-- **Phase B** holds a read-only connection open for at least 20 seconds - `--hold-ms` is a floor,
+- **Phase A** replays `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks, with
+  `[observer] preset = "none"`, and reads the replay's own bounds. The replay drives one-shot worker
+  runs - 38 of them, `hookWorkerRuns` 0 - not a resident.
+- **Phase B** runs against the resident worker the hooks spawn, and holds a read-only connection
+  open for at least 20 seconds - `--hold-ms` is a floor,
   and the hold also carries the session-end hooks and the wait for a worker batch to overlap it, so
   the measured holds were 25.4 s and 26.8 s - while 20 sessions of 9 prompts each keep capturing,
   sampling the database size, the WAL size, the spool and every one of the run's processes
