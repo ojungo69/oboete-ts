@@ -2,7 +2,7 @@
 // T042 / SC-008: retained-history resource run. Product checkpoints only; doctor generation predicate.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -62,9 +62,27 @@ function parseCli(argv) {
 function childEnv(paths) {
   return { PATH: `${paths.bin}:/usr/bin:/bin`, HOME: paths.userHome, OBOETE_HOME: paths.oboeteHome, TMPDIR: paths.tmp, NODE_ENV: 'test' };
 }
+function git(...args) {
+  return spawnSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: ROOT, GIT_CONFIG_NOSYSTEM: '1' } });
+}
 function gitHead() {
-  const r = spawnSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: ROOT, GIT_CONFIG_NOSYSTEM: '1' } });
+  const r = git('rev-parse', '--short', 'HEAD');
   return r.status === 0 ? r.stdout.trim() : 'unknown';
+}
+// What the run measures is the built bundle, which is not in the repository. A receipt that names a
+// commit has to be a receipt of that commit: a tracked file changed since it, or a bundle built
+// from something else, would make the name a guess. The tree is checked, and the bundle's own
+// digest goes in the report so two receipts can be compared without trusting either name.
+function requireCleanTree() {
+  const r = git('status', '--porcelain', '--untracked-files=no');
+  if (r.status !== 0) throw new HarnessError(`git status failed: ${(r.stderr ?? '').trim() || 'unknown error'}`);
+  const dirty = r.stdout.split('\n').filter((line) => line !== '');
+  if (dirty.length > 0) {
+    throw new HarnessError(`the working tree has ${dirty.length} modified tracked file(s), so a receipt naming ${gitHead()} would not be a receipt of what ran: ${dirty.slice(0, 3).map((line) => line.slice(3)).join(', ')}`);
+  }
+}
+function bundleDigest() {
+  try { return createHash('sha256').update(readFileSync(BUNDLE)).digest('hex').slice(0, 16); } catch { return 'unknown'; }
 }
 function loadAverage() { try { return readFileSync('/proc/loadavg', 'utf8').trim(); } catch { return 'unavailable'; } }
 // A file that is not there yet is zero bytes; a file this run may not read is not, and reporting it
@@ -247,7 +265,11 @@ function killGroup(child, signal, ident) {
 // Takes the processes still in a group this run created, by pid and start time, so they can be
 // stopped after the leader is gone - and remembers which group they came from, so a timeout can
 // reach that group's survivors without touching anything else this run owns.
-function adoptMembers(pgid) {
+function adoptMembers(pgid, leader) {
+  // A group is only proof of anything while the leader this run started is still in it: once it is
+  // gone the number can belong to somebody else's group, and adopting its members would put
+  // strangers on the list `killMembers` signals.
+  if (leader !== undefined && procIdent(pgid) !== leader) return;
   if (!groupAlive(pgid)) return;
   const known = groupSurvivors.get(pgid) ?? new Set();
   for (const member of groupMembers(pgid)) {
@@ -291,12 +313,12 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     child.stderr?.on('data', (chunk) => { stderr += chunk; if (inheritStderr === true) process.stderr.write(chunk); });
     const timer = setTimeout(() => {
       timedOut = true;
-      adoptMembers(child.pid ?? 0);
+      adoptMembers(child.pid ?? 0, leader);
       killGroup(child, 'SIGTERM', leader);
       // The wrapper may already have died of the SIGTERM its command ignored, in which case the
       // group is no longer proof of anything and the survivors taken above are the way in.
       hardTimer = setTimeout(() => {
-        adoptMembers(child.pid ?? 0);
+        adoptMembers(child.pid ?? 0, leader);
         killGroup(child, 'SIGKILL', leader);
         killMembers(child.pid ?? 0, 'SIGKILL');
         // Whatever is left holding the pipes, the caller gets its answer: a harness that waits for
@@ -311,7 +333,7 @@ function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
     // named by a leader this run started.
     child.on('exit', () => {
       if (child.pid === undefined) return;
-      adoptMembers(child.pid);
+      adoptMembers(child.pid, leader);
       ownPids.delete(child.pid);
     });
     child.stdin?.on('error', () => {});
@@ -847,7 +869,7 @@ function renderMarkdown(report) {
   let closing = 'Every listed check passed on this run.';
   if (report.error !== undefined) closing = `Harness error: ${report.error} Exit 2.`;
   else if (report.failed) closing = 'One or more checks failed. Exit 1.';
-  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
+  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`, bundle sha256 \`${report.bundleSha256 ?? 'unknown'}\`; the run refuses to start with a modified tracked file, so the commit names what ran.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
 }
 async function phaseA(cli, paths, env) {
   const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs: REPLAY_TIMEOUT_MS, inheritStderr: true });
@@ -920,9 +942,17 @@ async function phaseB(cli, paths, env, runId, samples) {
 // The temporary home, its bin with the node the product's hooks find on PATH, and the directory the
 // wrappers write their RSS into.
 function requireInputs(cli) {
-  if (!existsSync(cli.fixture)) throw new HarnessError(`fixture file not found: ${cli.fixture}`);
+  // Counted here rather than beside the report: this runs inside the try, so a fixture that is a
+  // directory, or one that becomes unreadable during the several minutes of a run, is a failure
+  // that still keeps the home and prints its path.
+  let lines;
+  try { lines = readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length; } catch (error) {
+    throw new HarnessError(`fixture file cannot be read: ${cli.fixture} (${error instanceof Error ? error.message : String(error)})`);
+  }
   if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
+  requireCleanTree();
+  return lines;
 }
 // `root` is created by the caller, so a failure part way through still leaves it a home to keep and
 // a path to print.
@@ -950,12 +980,13 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
+  let fixtureLines = 0;
   let priorIds;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
-    requireInputs(cli);
+    fixtureLines = requireInputs(cli);
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = prepareIsolation(isolation);
     const env = childEnv(paths);
@@ -990,8 +1021,7 @@ async function runLive(cli) {
   if (error === undefined && logError !== undefined) error = logError;
   const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
-    startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), fixture: cli.fixture,
-    fixtureLines: existsSync(cli.fixture) ? readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length : 0,
+    startedAt, node: `${process.execPath} (${process.version})`, commit: gitHead(), bundleSha256: bundleDigest(), fixture: cli.fixture, fixtureLines,
     loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
     home: isolation,
   };
