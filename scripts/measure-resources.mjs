@@ -432,8 +432,15 @@ async function waitHeldBatch(logPath, fromMs) {
   }
   throw new HarnessError('held reader never overlapped a worker batch');
 }
+// A doctor that printed its report and then had to be killed is not a reading of a healthy home,
+// even though its JSON parses. Its exit code is not checked: `doctor` reports a degraded item by
+// exiting non-zero, and `preset = "none"` makes generation degraded by construction.
 async function readDoctor(env, cwd) {
-  const items = parseJsonStdout((await spawnWait(process.execPath, [BUNDLE, 'doctor', '--json'], { env, cwd, timeoutMs: 60_000 })).stdout)?.items ?? [];
+  const run = await spawnWait(process.execPath, [BUNDLE, 'doctor', '--json'], { env, cwd, timeoutMs: 60_000 });
+  if (run.timedOut || run.signal !== null) {
+    throw new HarnessError(`doctor --json was killed (${run.timedOut ? 'timeout' : run.signal})`);
+  }
+  const items = parseJsonStdout(run.stdout)?.items ?? [];
   const generation = items.find((item) => item.item === 'generation');
   const worker = items.find((item) => item.item === 'worker');
   if (generation === undefined) throw new HarnessError('doctor --json missing generation item');
@@ -593,8 +600,11 @@ function checkRss(input) {
   // A child with no reading at all is an unmeasured process, not a small one.
   const unmeasured = children.filter((c) => c.hwmKb === 0).map((c) => c.command);
   const maxHwm = Math.max(input.phaseAHwmKb, input.phaseB.reduce((m, p) => Math.max(m, p.maxHwm), 0), childMax);
+  // Strictly under, as the evidence and the replay's own SC-003 both state it.
+  const unsampledWorkers = input.unsampledWorkers ?? [];
   return {
-    name: 'rss-bound', pass: maxHwm <= RSS_BOUND_KIB && unmeasured.length === 0, maxHwm, ...input,
+    name: 'rss-bound', pass: maxHwm < RSS_BOUND_KIB && unmeasured.length === 0 && unsampledWorkers.length === 0,
+    maxHwm, ...input,
     childMax, childCount: children.length, unmeasured, boundKib: RSS_BOUND_KIB,
     note: "20-second window cannot show long-run growth; that is issue #268's seven-day run",
   };
@@ -730,6 +740,8 @@ async function selfCheck() {
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 151 * 1024 }] }).pass, false);
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 0 }] }).pass, false);
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 1_000 }] }).pass, true);
+  assert.equal(checkRss({ phaseAHwmKb: 150 * 1024, phaseB: pid(100) }).pass, false, 'the bound is strict, as the evidence states it');
+  assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), unsampledWorkers: [4242] }).pass, false, 'a resident no sample saw is an unmeasured process');
   assert.equal(parseRss('123456\n'), 123456);
   assert.equal(parseRss('Command terminated by signal 15\n99\n'), 99);
   assert.equal(parseRss(''), 0);
@@ -784,7 +796,7 @@ function checkRows(report) {
     ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} spoolFiles=${c.retained.spoolFiles}`],
     ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
-    ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length}. ${c.rss.note}`],
+    ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length} unsampled residents=${(c.rss.unsampledWorkers ?? []).length}. ${c.rss.note}`],
   ];
 }
 function renderMarkdown(report) {
@@ -851,6 +863,12 @@ async function phaseB(cli, paths, env, runId, samples) {
     const logText = readObserveLog(paths.oboeteHome);
     const batchesHeld = countBatchLines(logText, holdFrom, holdTo);
     if (batchesHeld === 0) throw new HarnessError('held reader never overlapped a worker batch');
+    // A resident a hook spawns is detached, so the hook's own `%M` does not cover it: one that both
+    // started and ended between two samples would be a process of this run that nothing measured.
+    const sampledPids = new Set(samples.flatMap((s) => s.processes.map((p) => p.pid)));
+    const sinceFirstSample = samples[0]?.at ?? 0;
+    const unsampledWorkers = workerPidsFrom(logText)
+      .filter((run) => run.at >= sinceFirstSample && !sampledPids.has(run.pid)).map((run) => run.pid);
     const held = samples.filter((s) => s.stage === 'hold');
     if (!held.some((s) => s.processes.some((p) => p.observe))) throw new HarnessError('no worker process of this home was sampled while the reader was held');
     finishSampling(sampler);
@@ -858,7 +876,7 @@ async function phaseB(cli, paths, env, runId, samples) {
     const walFinal = fileBytes(`${paths.db}-wal`);
     return {
       samples, hooks, hookErrors, sessionIds: sessionRun.sessionIds, markers: sessionRun.markers,
-      walStart, walPeak: held.reduce((m, s) => Math.max(m, s.walBytes), walStart), walFinal,
+      walStart, walPeak: held.reduce((m, s) => Math.max(m, s.walBytes), walStart), walFinal, unsampledWorkers,
       exitReason: endReasonFrom(logText, stopAt), stopMarker: existsSync(join(paths.oboeteHome, 'worker-stop')), batchesHeld,
       workerErrors: countErrorLines(logText, holdFrom), badEnds: badEndReasons(logText, holdFrom),
     };
@@ -895,7 +913,7 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
     notStuck: checkNotStuck({ ...doctor.stuck, spoolFiles: spoolCount(paths.spool), liveBatches: liveBatches(paths.db),
       endReason: b.exitReason, workerErrors: b.workerErrors, badEnds: b.badEnds, stopMarker: b.stopMarker }),
     wal: checkWal({ start: b.walStart, peak: b.walPeak, final: b.walFinal, batchesHeld: b.batchesHeld }),
-    rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks }),
+    rss: checkRss({ phaseAHwmKb: a.rssKb, phaseB: pidStats(samples), children: childPeaks, unsampledWorkers: b.unsampledWorkers }),
   };
 }
 async function runLive(cli) {
@@ -903,7 +921,7 @@ async function runLive(cli) {
   let isolation, paths, workerReason, error, logError;
   let priorIds;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
-  let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
+  let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
     requireInputs(cli);
@@ -956,11 +974,17 @@ async function main(argv) {
   if (cli.selfCheck) { await selfCheck(); return 0; }
   const report = await runLive(cli);
   process.stdout.write(renderMarkdown(report));
+  let receiptError;
   if (cli.jsonOut !== undefined) {
-    mkdirSync(dirname(cli.jsonOut), { recursive: true });
-    writeFileSync(cli.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
+    // A run whose receipt could not be written keeps its home, like any other failed run: deleting
+    // it here would leave the operator with neither the JSON nor the database it was taken from.
+    try {
+      mkdirSync(dirname(cli.jsonOut), { recursive: true });
+      writeFileSync(cli.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
+    } catch (error) { receiptError = error; report.failed = true; }
   }
   cleanupHome(cli, report);
+  if (receiptError !== undefined) throw receiptError;
   if (report.error !== undefined) return 2;
   return report.failed ? 1 : 0;
 }
