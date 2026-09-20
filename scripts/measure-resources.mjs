@@ -78,8 +78,9 @@ function isBusy(error) {
 function readVm(pid) {
   try {
     const text = readFileSync(`/proc/${pid}/status`, 'utf8');
-    const n = (key) => Number((text.match(new RegExp(`${key}:\\s+(\\d+)\\s+kB`)) ?? [])[1] ?? 0);
-    return { rssKb: n('VmRSS'), hwmKb: n('VmHWM') };
+    const rss = /^VmRSS:\s+(\d+) kB$/m.exec(text);
+    const hwm = /^VmHWM:\s+(\d+) kB$/m.exec(text);
+    return { rssKb: Number(rss?.[1] ?? 0), hwmKb: Number(hwm?.[1] ?? 0) };
   } catch { return null; }
 }
 // Only the processes this harness starts, plus the worker pids the product itself writes to the
