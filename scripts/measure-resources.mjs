@@ -13,7 +13,8 @@ import { parseArgs } from 'node:util';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const BUNDLE = join(ROOT, 'dist', 'oboete.mjs');
 const CONFIG = '[observer]\npreset = "none"\n\n[worker]\nidle_exit_ms = 60000\n';
-const SAMPLE_MS = 250, CHILD_SAMPLE_MS = 25, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
+const SAMPLE_MS = 250, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
+const TIME_BIN = '/usr/bin/time';
 const HOOK_TIMEOUT_MS = 15_000, REPLAY_TIMEOUT_MS = 40 * 60_000;
 const PENDING_TIMEOUT_MS = 3 * 60_000, STOPPED_TIMEOUT_MS = 2 * 60_000, BATCH_WAIT_MS = 60_000, DOCTOR_POLL_MS = 5_000;
 const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
@@ -23,6 +24,8 @@ const SESSION_KINDS = ['session_start', 'session_end', 'last_assistant_message',
 const CLOCK_TICK = clockTick();
 const ownPids = new Map();
 const childPeaks = [];
+let rssDir;
+let rssSeq = 0;
 const loggedPids = new Set();
 const WORKER_LOG_LAG_MS = 60_000;
 let bootAt;
@@ -184,31 +187,47 @@ function writeConfig(home) {
   for (const dir of [home, join(home, 'spool'), join(home, 'logs')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(join(home, 'config.toml'), CONFIG, { mode: 0o600 });
 }
+// `%M` is the kernel's peak resident size for the command and every descendant it waits for, read
+// at exit. Polling /proc cannot promise either: a spike after the last sample is invisible, and
+// phase A's own hooks are the replay's children, not this process's.
+function parseRss(text) {
+  const m = text.match(/^(\d+)\s*$/m);
+  return m === null ? 0 : Number(m[1]);
+}
+function readRss(path) {
+  let text = '';
+  try { text = readFileSync(path, 'utf8'); } catch { return 0; }
+  try { rmSync(path, { force: true }); } catch { /* the home is removed anyway */ }
+  return parseRss(text);
+}
+// The child leads its own process group, so a timeout reaches the command and not just the wrapper.
+function killGroup(child, signal) {
+  if (child.pid === undefined) return;
+  try { process.kill(-child.pid, signal); } catch { try { child.kill(signal); } catch { /* gone */ } }
+}
 function spawnWait(file, args, { env, cwd, timeoutMs, stdin, inheritStderr }) {
   const t0 = Date.now();
+  rssSeq += 1;
+  const rssFile = join(rssDir ?? tmpdir(), `rss-${rssSeq}.txt`);
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(file, args, {
-      cwd, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    const child = spawn(TIME_BIN, ['-f', '%M', '-o', rssFile, '--', file, ...args], {
+      cwd, env, detached: true, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     adopt(child.pid, false);
-    // The home sampler ticks every 250 ms and a hook runs for about 200: without watching each child
-    // the bound would hold only for the processes a tick happened to catch.
-    let peakKb = 0;
-    const watch = setInterval(() => { const vm = readVm(child.pid); if (vm !== null) peakKb = Math.max(peakKb, vm.hwmKb); }, CHILD_SAMPLE_MS);
     let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => { stderr += chunk; if (inheritStderr === true) process.stderr.write(chunk); });
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2_000).unref(); }, timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); clearInterval(watch); reject(error); });
+    const timer = setTimeout(() => { timedOut = true; killGroup(child, 'SIGTERM'); setTimeout(() => killGroup(child, 'SIGKILL'), 2_000).unref(); }, timeoutMs);
+    child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.stdin?.on('error', () => {});
     if (stdin !== undefined) child.stdin?.end(stdin);
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      clearInterval(watch);
-      childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb: peakKb });
-      resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb: peakKb, ms: Date.now() - t0 });
+      const hwmKb = readRss(rssFile);
+      childPeaks.push({ pid: child.pid ?? 0, command: args[1] ?? file, hwmKb });
+      resolvePromise({ status, signal, stdout, stderr, timedOut, hwmKb, ms: Date.now() - t0 });
     });
   });
 }
@@ -513,6 +532,9 @@ function selfCheck() {
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 151 * 1024 }] }).pass, false);
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 0 }] }).pass, false);
   assert.equal(checkRss({ phaseAHwmKb: 100, phaseB: pid(100), children: [{ pid: 2, command: 'hook', hwmKb: 1_000 }] }).pass, true);
+  assert.equal(parseRss('123456\n'), 123456);
+  assert.equal(parseRss('Command terminated by signal 15\n99\n'), 99);
+  assert.equal(parseRss(''), 0);
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
   assert.equal((('kept home=/h repo=/tmp/oboete-t068-repo-abc\n').match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1], '/tmp/oboete-t068-repo-abc');
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
@@ -648,13 +670,15 @@ async function runLive(cli) {
   try {
     if (!existsSync(cli.fixture)) throw new HarnessError(`fixture file not found: ${cli.fixture}`);
     if (!existsSync(BUNDLE)) throw new HarnessError(`engine bundle not found: ${BUNDLE}`);
+    if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = {
       root: isolation, userHome: join(isolation, 'home'), oboeteHome: join(isolation, 'oboete'),
       tmp: join(isolation, 'tmp'), repo: '', db: join(isolation, 'oboete', 'memory.db'), spool: join(isolation, 'oboete', 'spool'),
       bin: join(isolation, 'bin'),
     };
-    for (const dir of [paths.userHome, paths.tmp, paths.bin]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    rssDir = join(isolation, 'rss');
+    for (const dir of [paths.userHome, paths.tmp, paths.bin, rssDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     symlinkSync(process.execPath, join(paths.bin, 'node'));
     writeConfig(paths.oboeteHome);
     const env = childEnv(paths);
