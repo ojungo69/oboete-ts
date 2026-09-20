@@ -79,11 +79,9 @@ export function dominantScript(text: string): 'ja' | 'en' | 'other' {
  * the residual covers the framed shape, a title trimmed to its limit, a body trimmed with an
  * omission marker, and a title reused from a nearby memory, under one rule.
  *
- * A field whose own script *agrees* is accepted whole and its residual is never scored, which is
- * how this read before the exemption existed and is not changed here: a long quotation in the
- * hint's language therefore carries prose in another language past the gate (#295, reproduced).
- * Scoring every field's residual is one deleted line and an unmeasured rise in the
- * `language_mismatch` fallback rate, which is why it is that issue and not this function.
+ * A field whose own script *agrees* is accepted whole and its residual is never scored, as it was
+ * before the exemption existed, so a long quotation in the hint's language carries prose in another
+ * language past the gate. That is #295, which carries the measurement a tightening needs.
  */
 export function checkLanguage(input: ObserverInput, output: ObserverOutput): 'ok' | 'mismatch' {
   // Without a dominant script in the input there is nothing to compare the answer against.
