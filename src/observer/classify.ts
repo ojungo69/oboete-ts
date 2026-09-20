@@ -178,6 +178,11 @@ function unquoted(text: string, corpus: QuotedCorpus): string {
       let length = MIN_QUOTED_RUN;
       while (index + length + 1 <= subject.length
         && corpus.texts.some((part) => part.includes(subject.slice(index, index + length + 1)))) length += 1;
+      // The extension is measured in UTF-16 units, so it can stop between the halves of a surrogate
+      // pair: a corpus part carrying `𠮷` lets a run through the high half it shares with
+      // `𠮸`. The run gives that half back, so what the junction keeps below is a whole character.
+      const end = subject.charCodeAt(index + length - 1);
+      if (end >= 0xD800 && end <= 0xDBFF) length -= 1;
       // A whole code point, because half of a surrogate pair is not a character: `dominantScript`
       // reads a lone surrogate as `other`, which agrees with every hint and un-scores the junction.
       if (index === previousRunEnd) residual += String.fromCodePoint(subject.codePointAt(index) ?? 0);

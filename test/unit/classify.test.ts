@@ -354,6 +354,16 @@ test('a field tiled out of two quotes keeps a whole character at the junction', 
   ];
   const joined = output(observation({ title: 'Record', body: '日本語文𠮷配布物' }));
   assert.equal(checkLanguage(inputWithHint('en', events), joined), 'mismatch');
+
+  // The mirror: a run can also *end* between the halves, because two characters of the same
+  // supplementary block share their high half, so a corpus part carrying `𠮷` extends a run
+  // through the `𠮸` of the subject. The run gives that half back.
+  const shared = [
+    { id: 'e1', kind: 'prompt', text: 'the record says 配布色は𠮷 in one place' },
+    { id: 'e2', kind: 'prompt', text: 'and 𠮸琥珀である in another.' },
+  ];
+  const across = output(observation({ title: 'Record', body: '配布色は𠮸琥珀である' }));
+  assert.equal(checkLanguage(inputWithHint('en', shared), across), 'mismatch');
 });
 
 test('a supplementary-plane character is one coincidence, not a quote', () => {
