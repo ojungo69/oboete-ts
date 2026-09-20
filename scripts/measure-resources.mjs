@@ -373,16 +373,14 @@ function copyObserveLog(home, jsonOut) {
   mkdirSync(dirname(jsonOut), { recursive: true });
   writeFileSync(`${jsonOut.replace(/\.json$/i, '')}.observe.log`, readFileSync(source));
 }
-function findReplayRepo(json, stderr, tmp) {
-  const fromJson = typeof json?.repo === 'string' ? json.repo : undefined;
-  const fromKeep = (stderr.match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1];
-  const reported = fromJson ?? fromKeep;
-  if (reported !== undefined && existsSync(reported)) return { repo: reported, source: fromJson !== undefined ? 'replay-json' : 'replay-keep-stderr' };
-  let names = [];
-  try { names = readdirSync(tmp, { withFileTypes: true }); } catch { /* empty */ }
-  const dirs = names.filter((e) => e.isDirectory() && e.name.startsWith('oboete-t068-repo-')).map((e) => join(tmp, e.name));
-  if (dirs.length === 1) return { repo: dirs[0], source: 'replay-tmpdir (JSON has repoId only; replayArgv has --keep and no --repo)' };
-  throw new HarnessError(`phase A --keep did not yield a repository path (replayArgv has no --repo); tmp=${dirs.join('|') || 'none'}`);
+// The replay's JSON names a repoId, not a path, and `replayArgv` has no `--repo`, so the only way
+// to the repository it made is the line `--keep` prints.
+function findReplayRepo(stderr) {
+  const repo = (stderr.match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1];
+  if (repo === undefined || !existsSync(repo)) {
+    throw new HarnessError(`phase A --keep printed no usable repository path; stderr tail=${stderr.slice(-200)}`);
+  }
+  return repo;
 }
 function endReasonFrom(text, afterMs = 0) {
   let last = null, lastAfter = null;
@@ -735,7 +733,7 @@ async function selfCheck() {
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
   assert.equal(/^kept home=\S+ repo=(\S+)\s*$/m.exec('kept home=/h repo=/tmp/oboete-t068-repo-abc\n')?.[1], '/tmp/oboete-t068-repo-abc');
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
-  const a0 = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '', repoSource: '' };
+  const a0 = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   const md = renderMarkdown({ checks: null, error: 'held-batch', failed: true, startedAt: '', node: '', commit: '', fixture: '', fixtureLines: 0, loadAtStart: '', sessions: 1, prompts: 1, holdMs: 1, phaseA: a0, phaseB: { samples: [], hooks: [], hookErrors: [], stopMarker: false, exitReason: null } });
   assert.match(md, /\| retained \| not run \| held-batch \|/);
   assert.match(md, /\| not-stuck \| not run \| held-batch \|/);
@@ -798,7 +796,7 @@ function renderMarkdown(report) {
   let closing = 'Every listed check passed on this run.';
   if (report.error !== undefined) closing = `Harness error: ${report.error} Exit 2.`;
   else if (report.failed) closing = 'One or more checks failed. Exit 1.';
-  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\` (${a.repoSource}). Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
+  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
 }
 async function phaseA(cli, paths, env) {
   const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs: REPLAY_TIMEOUT_MS, inheritStderr: true });
@@ -809,9 +807,9 @@ async function phaseA(cli, paths, env) {
   if (result.status !== 0 && result.status !== 1) throw new HarnessError(`phase A replay exited ${result.status}`);
   if (!existsSync(paths.db)) throw new HarnessError('phase A left no memory.db');
   const json = parseJsonStdout(result.stdout);
-  const found = findReplayRepo(json, result.stderr, paths.tmp);
+  const repo = findReplayRepo(result.stderr);
   paths.repo = found.repo;
-  return { exit: result.status, ms: result.ms, json, dbBytes: fileBytes(paths.db), walBytes: fileBytes(`${paths.db}-wal`), repo: found.repo, repoSource: found.source, ...replayGates(json) };
+  return { exit: result.status, ms: result.ms, json, dbBytes: fileBytes(paths.db), walBytes: fileBytes(`${paths.db}-wal`), repo, ...replayGates(json) };
 }
 async function phaseB(cli, paths, env, runId, samples) {
   let stage = 'hold', reader, walWitness, holdFrom = 0, holdTo = 0;
@@ -896,7 +894,7 @@ async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
   let priorIds = [];
-  let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '', repoSource: '' };
+  let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0 };
   let checks = null;
   try {
