@@ -197,12 +197,19 @@ test('trimObservation keeps content when the body opens with blank lines', () =>
   // Cutting at the first line boundary would leave `\n... (+1 omitted)` — the marker as the whole
   // body, with every character of content dropped. `classify.ts` also reads a field that is only
   // the marker as the provider's own words, which only holds while the worker never writes one.
-  for (const prefix of ['\n', '  \n', '\n\n', ' \t \n']) {
+  for (const prefix of ['\n', '  \n', '\n\n', ' \t \n', ' '.repeat(2_000) + '\n']) {
     const trimmed = trimObservation(observation({ body: `${prefix}${'\u3042'.repeat(2_500)}` }));
-    assert.match(trimmed.body, /\n\.\.\. \(\+\d+ omitted\)$/, prefix);
-    assert.ok(trimmed.body.includes('\u3042'), `content survives ${JSON.stringify(prefix)}`);
-    assert.ok(trimmed.body.length <= 2000, prefix);
+    assert.match(trimmed.body, /\n\.\.\. \(\+\d+ omitted\)$/, JSON.stringify(prefix.slice(0, 8)));
+    assert.ok(trimmed.body.includes('\u3042'), `content survives ${JSON.stringify(prefix.slice(0, 8))}`);
+    assert.ok(trimmed.body.length <= 2000, JSON.stringify(prefix.slice(0, 8)));
   }
+});
+
+test('trimObservation returns nothing for a body that is blank all the way through', () => {
+  // The alternative is a marker that omits nothing, which `classify.ts` then scores as the
+  // provider's own English and sends a whole valid batch to the fallback.
+  assert.equal(trimObservation(observation({ body: ' '.repeat(2_500) })).body, '');
+  assert.equal(trimObservation(observation({ body: '\n'.repeat(2_500) })).body, '');
 });
 
 test('validateObserverOutput trims an oversized body and title instead of refusing the batch', () => {
