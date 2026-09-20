@@ -374,11 +374,15 @@ function copyObserveLog(home, jsonOut) {
   writeFileSync(`${jsonOut.replace(/\.json$/i, '')}.observe.log`, readFileSync(source));
 }
 // The replay's JSON names a repoId, not a path, and `replayArgv` has no `--repo`, so the only way
-// to the repository it made is the line `--keep` prints.
-function findReplayRepo(stderr) {
-  const repo = (stderr.match(/^kept home=\S+ repo=(\S+)\s*$/m) ?? [])[1];
-  if (repo === undefined || !existsSync(repo)) {
-    throw new HarnessError(`phase A --keep printed no usable repository path; stderr tail=${stderr.slice(-200)}`);
+// to the repository it made is the line `--keep` prints. The home this run made is the anchor:
+// matching it rather than a run of non-blank characters keeps a path with a space in it readable,
+// and takes only the line that names this run's own home.
+function findReplayRepo(stderr, home) {
+  const prefix = `kept home=${home} repo=`;
+  const line = stderr.split('\n').find((row) => row.startsWith(prefix));
+  const repo = line?.slice(prefix.length).trimEnd();
+  if (repo === undefined || repo === '' || !existsSync(repo)) {
+    throw new HarnessError(`phase A --keep printed no usable repository path for home=${home}; stderr tail=${stderr.slice(-200)}`);
   }
   return repo;
 }
@@ -731,7 +735,11 @@ async function selfCheck() {
   assert.equal(parseRss(''), 0);
   await groupKillCheck();
   assert.equal(endReasonFrom('2026-01-01T00:00:00.000Z info run end exit=0 reason=empty\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped\n'), 'stopped');
-  assert.equal(/^kept home=\S+ repo=(\S+)\s*$/m.exec('kept home=/h repo=/tmp/oboete-t068-repo-abc\n')?.[1], '/tmp/oboete-t068-repo-abc');
+  const spaced = mkdtempSync(join(tmpdir(), 'oboete-t042 space-'));
+  try {
+    assert.equal(findReplayRepo(`kept home=${spaced} repo=${spaced}\n`, spaced), spaced, 'a path with a space in it is still read');
+    assert.throws(() => findReplayRepo(`kept home=/elsewhere repo=${spaced}\n`, spaced), HarnessError);
+  } finally { rmSync(spaced, { recursive: true, force: true }); }
   assert.throws(() => replayGates({ worker: { rssKb: '1' } }), HarnessError);
   const a0 = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   const md = renderMarkdown({ checks: null, error: 'held-batch', failed: true, startedAt: '', node: '', commit: '', fixture: '', fixtureLines: 0, loadAtStart: '', sessions: 1, prompts: 1, holdMs: 1, phaseA: a0, phaseB: { samples: [], hooks: [], hookErrors: [], stopMarker: false, exitReason: null } });
@@ -807,7 +815,7 @@ async function phaseA(cli, paths, env) {
   if (result.status !== 0 && result.status !== 1) throw new HarnessError(`phase A replay exited ${result.status}`);
   if (!existsSync(paths.db)) throw new HarnessError('phase A left no memory.db');
   const json = parseJsonStdout(result.stdout);
-  const repo = findReplayRepo(result.stderr);
+  const repo = findReplayRepo(result.stderr, paths.oboeteHome);
   paths.repo = repo;
   return { exit: result.status, ms: result.ms, json, dbBytes: fileBytes(paths.db), walBytes: fileBytes(`${paths.db}-wal`), repo, ...replayGates(json) };
 }
