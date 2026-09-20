@@ -79,6 +79,7 @@ hook failed, 2 the run could not be completed - so do not pipe it away:
 
 ```sh
 npm run build
+mkdir -p /var/tmp/oboete-t042
 ~/.nvm/versions/node/v24.16.0/bin/node scripts/measure-resources.mjs \
   --json-out /var/tmp/oboete-t042/v8-24.16.0.json > /var/tmp/oboete-t042/v8-24.16.0.md
 echo "exit=$?"

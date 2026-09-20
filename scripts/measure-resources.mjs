@@ -20,8 +20,11 @@ const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
 const NO_MODEL = new Set(['SC-009', 'session start']);
 const STAGES = ['hold', 'drain', 'stop', 'final'];
 const SESSION_KINDS = ['session_start', 'session_end', 'last_assistant_message', 'turn_end'];
+const CLOCK_TICK = clockTick();
 const ownPids = new Map();
 const loggedPids = new Set();
+const WORKER_LOG_LAG_MS = 60_000;
+let bootAt;
 class HarnessError extends Error { constructor(message) { super(message); this.name = 'HarnessError'; } }
 function usage() {
   return 'Usage: node scripts/measure-resources.mjs [--fixture test/fixtures/events-1000.jsonl] [--json-out <path>] [--sessions 20] [--prompts 9] [--hold-ms 20000] [--keep] [--self-check]\n';
@@ -77,6 +80,29 @@ function readVm(pid) {
 // Only the processes this harness starts, plus the worker pids the product itself writes to the
 // temp home's observe.log, are ever inspected. Scanning /proc for an OBOETE_HOME environment reads
 // the environment - and so the credentials - of processes this run does not own.
+// /proc/<pid>/stat field 22 counts clock ticks since boot, so a wall-clock start needs both.
+function clockTick() {
+  const r = spawnSync('getconf', ['CLK_TCK'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+  const n = Number((r.stdout ?? '').trim());
+  return Number.isFinite(n) && n > 0 ? n : 100;
+}
+function bootMs() {
+  if (bootAt === undefined) {
+    const m = (() => { try { return readFileSync('/proc/stat', 'utf8').match(/^btime (\d+)/m); } catch { return null; } })();
+    bootAt = m === null ? null : Number(m[1]) * 1_000;
+  }
+  return bootAt;
+}
+// A process that a `run start` line names must have begun just before that line was written. Without
+// this, a pid whose worker ended and whose number a stranger now carries would be adopted - and
+// signalled - on the first pass that reads the old line.
+function startedBefore(pid, atMs) {
+  const ident = procIdent(pid);
+  const boot = bootMs();
+  if (ident === null || boot === null || !Number.isFinite(atMs)) return false;
+  const began = boot + (Number(ident) / CLOCK_TICK) * 1_000;
+  return began <= atMs + 2_000 && began >= atMs - WORKER_LOG_LAG_MS;
+}
 function procIdent(pid) {
   let text;
   try { text = readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; }
@@ -94,19 +120,19 @@ function adopt(pid, observe) {
 }
 // A worker pid is taken from the log once. The line stays in the log after that process ends, and a
 // pid carrying that number later belongs to somebody else.
-function adoptLogged(pid) {
+function adoptLogged(pid, atMs) {
   if (loggedPids.has(pid)) return;
   loggedPids.add(pid);
-  adopt(pid, true);
+  if (startedBefore(pid, atMs)) adopt(pid, true);
 }
 function readObserveLog(home) {
   try { return readFileSync(join(home, 'logs', 'observe.log'), 'utf8'); } catch { return ''; }
 }
 function workerPidsFrom(text) {
-  return [...text.matchAll(/^\S+ info run start\b.*\bpid=(\d+)/gm)].map((m) => Number(m[1]));
+  return [...text.matchAll(/^(\S+) info run start\b.*\bpid=(\d+)/gm)].map((m) => ({ pid: Number(m[2]), at: Date.parse(m[1]) }));
 }
 function homeProcesses(home) {
-  for (const pid of workerPidsFrom(readObserveLog(home))) adoptLogged(pid);
+  for (const run of workerPidsFrom(readObserveLog(home))) adoptLogged(run.pid, run.at);
   const live = [];
   for (const [pid, info] of ownPids) {
     if (procIdent(pid) === info.ident) live.push({ pid, ident: info.ident, observe: info.observe });
@@ -434,7 +460,10 @@ function selfCheck() {
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, messages: 0 }], spoolFiles: 0 }).pass, false);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, turnEnds: 2 }], spoolFiles: 0 }).pass, false);
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: [{ id: 's0', ...one, failedKinds: ['last_assistant_message', 'turn_end'] }], spoolFiles: 0 }).pass, false);
-  assert.deepEqual(workerPidsFrom('2026-01-01T00:00:00.000Z info run start pid=4242\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped pid=4242\n'), [4242]);
+  assert.deepEqual(workerPidsFrom('2026-01-01T00:00:00.000Z info run start pid=4242\n2026-01-01T00:00:01.000Z info run end exit=0 reason=stopped pid=4242\n'), [{ pid: 4242, at: Date.parse('2026-01-01T00:00:00.000Z') }]);
+  assert.equal(startedBefore(process.pid, Date.now()), true);
+  assert.equal(startedBefore(process.pid, Date.now() - 3_600_000), false);
+  assert.equal(startedBefore(process.pid, Number.NaN), false);
   assert.equal(typeof procIdent(process.pid), 'string');
   assert.equal(procIdent(2 ** 22 + 1), null);
   assert.equal(checkNotStuck(stuckOk).pass, true);
