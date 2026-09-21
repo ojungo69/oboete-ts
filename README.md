@@ -340,8 +340,8 @@ to exist already and may not sit inside — or contain — your oboete home, `ke
 need a terminal, and a pull reads at most 32 other replicas' bundles. A push writes the whole
 revision log as one snapshot and refuses it rather than splitting it when it passes a bound: 256
 MiB of plaintext, 4 MiB for a single line, a million revisions, 4,096 repositories, or 4,096
-revisions of any single record — the last of which ordinary use reaches first, since each push
-records a new revision for a context you have worked in. A new space syncs the
+revisions of any single record. The last is the one ordinary use can reach first: working in a
+repository changes its context row, and the next push records another revision of it. A new space syncs the
 `eligible`, `local_only` and `private` classes unless `--classes` narrows it.
 
 ## Privacy model
