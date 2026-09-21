@@ -24,7 +24,7 @@ import { consentMatches, loadConfig } from '../config.js';
 import { childEnvironment, credentialEntries, scrubCredentials } from '../log.js';
 import { ensureDirectories, oboetePaths } from '../paths.js';
 import { claimLease, heartbeat, releaseLease } from '../worker/lease.js';
-import { SUMMARIZABLE_ROW_SQL } from '../worker/batches.js';
+import { RESOLVED_WORK_SQL, SUMMARIZABLE_ROW_SQL } from '../worker/batches.js';
 import { resolveRepoIdentity } from '../repo-identity.js';
 import { stripRecognizedPacks } from '../injection/recognize.js';
 
@@ -408,7 +408,8 @@ export function releaseHeldLease(dbPath: string, token: string): 'released' | 'k
   finally { db.close(); }
 }
 
-/** A current degraded summary settles this invocation without claiming successful generation. */
+/** A current degraded summary settles this invocation without claiming successful generation;
+ * sources awaiting a work choice do not block it (#336). */
 export function replayTargetsSettled(
   db: ReturnType<typeof openDatabase>['db'], repoId: string, sessionIds: readonly string[],
 ): boolean {
@@ -417,7 +418,7 @@ export function replayTargetsSettled(
     AND NOT EXISTS (SELECT 1 FROM observation_batch_sources bs JOIN observation_batches b ON b.id = bs.batch_id
       WHERE b.session_id = s.id AND bs.outcome = 'assigned')
     AND NOT EXISTS (SELECT 1 FROM raw_events WHERE session_id = s.id AND batch_id IS NULL
-      AND processing_state = 'pending' AND ${SUMMARIZABLE_ROW_SQL})
+      AND processing_state = 'pending' AND ${SUMMARIZABLE_ROW_SQL} AND ${RESOLVED_WORK_SQL})
     AND (s.summary_state = 'no_content' OR (s.summary_updated_at IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM observation_batches b
         WHERE b.session_id = s.id AND b.completed_at > s.summary_updated_at)))`);

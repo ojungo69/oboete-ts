@@ -30,6 +30,7 @@ import { CACHE_MS } from '../../src/observer/catalog.js';
 import { DAILY_CAP, SESSION_END_RESERVE, utcDay } from '../../src/observer/reservation.js';
 import { runtimeStateSet } from '../../src/worker/purge.js';
 import { withTempHome } from '../helpers/home.js';
+import { seedWorkBinding } from '../helpers/work.js';
 
 const NODE = '/usr/bin/node';
 const BUNDLE = '/opt/oboete/dist/oboete.mjs';
@@ -1304,6 +1305,48 @@ test('the worker item reports stop=set when the sentinel is present', async () =
     } finally {
       db.close();
     }
+  });
+});
+
+test('pending sources awaiting a work choice warn without counting as pending (#336)', async () => {
+  await withItemDatabase((db) => {
+    db.exec(`INSERT INTO repos (id, identity_kind, normalized_identity)
+        VALUES ('doctor-generation', 'common_dir', 'doctor-generation');
+      INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, status)
+        VALUES ('doctor-generation', 'doctor-generation', 'claude', 'native-generation', 'conversation-generation', 'active');`);
+    const resolved = seedWorkBinding(db, 'doctor-generation');
+    db.prepare(`INSERT INTO work_bindings (id, session_id, context_id, work_id, created_at, closed_at, reason)
+      SELECT 'late-generation', session_id, context_id, NULL, created_at - 1, created_at, 'late_source'
+      FROM work_bindings WHERE id = ?`).run(resolved);
+    db.prepare(`INSERT INTO raw_events
+      (id, repo_id, session_id, kind, content, classification_state, processing_state, work_binding_id, via_spool)
+      VALUES ('late-source', 'doctor-generation', 'doctor-generation', 'prompt', 'Recovered source', 'done', 'pending', 'late-generation', 1)`).run();
+
+    const awaiting = generationItem(db, false);
+    assert.equal(awaiting.status, 'warning');
+    assert.equal(awaiting.reason, 'Retained sources: 0 pending; 0 waiting; 0 parked; 0 incomplete captures; ' +
+      '0 legacy sources held; 0 privacy exclusions; 0 processed (0 recovered); 1 awaiting a work choice.');
+    assert.match(awaiting.recovery, /oboete work status/);
+    assert.match(awaiting.recovery, /oboete work choose <binding-id> <work-id\|new>/);
+
+    assert.doesNotMatch(awaiting.recovery, /choose-source/);
+
+    // #336: an absent binding also awaits a choice, including SQL's NULL result for IN; `work choose`
+    // cannot reach it, so the step names `choose-source` instead.
+    db.exec("UPDATE raw_events SET work_binding_id = NULL WHERE id = 'late-source'");
+    const unbound = generationItem(db, false);
+    assert.equal(unbound.status, 'warning');
+    assert.equal(unbound.reason, awaiting.reason);
+    assert.match(unbound.recovery, /oboete work choose-source <source-id> <work-id\|new>/);
+    assert.doesNotMatch(unbound.recovery, /work choose <binding-id>/);
+
+    db.prepare(`INSERT INTO raw_events
+      (id, repo_id, session_id, kind, content, classification_state, processing_state, work_binding_id)
+      VALUES ('resolved-source', 'doctor-generation', 'doctor-generation', 'prompt', 'Resolved source', 'done', 'pending', ?)`).run(resolved);
+    const mixed = generationItem(db, false);
+    assert.equal(mixed.status, 'warning');
+    assert.match(mixed.reason, /1 pending; 0 waiting; 0 parked;/);
+    assert.match(mixed.reason, /; 1 awaiting a work choice\./);
   });
 });
 

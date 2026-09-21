@@ -525,6 +525,7 @@ async function waitPending(env, cwd, timeoutMs) {
     try {
       const doc = await readDoctor(env, cwd);
       last = doc.generation.reason ?? '';
+      // #336: awaiting a work choice is reported and gated, but cannot drain automatically.
       if (doc.stuck.pending === 0) return;
     } catch (error) { last = errText(error); }
     await sleep(DOCTOR_POLL_MS);
@@ -648,7 +649,7 @@ function loadHits(dbPath, spoolDir, markers, sessionIds) {
 }
 function parseGeneration(reason) {
   const n = (re) => { const m = reason.match(re); return m === null ? Number.NaN : Number(m[1]); };
-  return { pending: n(/(\d{1,9}) pending/), waiting: n(/(\d{1,9}) waiting/), parked: n(/(\d{1,9}) parked/), legacy: n(/(\d{1,9}) legacy sources held/), processed: n(/(\d{1,9}) processed/) };
+  return { pending: n(/(\d{1,9}) pending/), awaiting: n(/(\d{1,9}) awaiting a work choice/), waiting: n(/(\d{1,9}) waiting/), parked: n(/(\d{1,9}) parked/), legacy: n(/(\d{1,9}) legacy sources held/), processed: n(/(\d{1,9}) processed/) };
 }
 function checkRetained(input) {
   const missing = []; const duplicate = []; const failed = [];
@@ -675,7 +676,8 @@ function checkNotStuck(input) {
   // With no summarizer there is nothing that could process a source, so work that left `waiting`
   // for `processed` would be work this run cannot account for, and a run that deferred nothing at
   // all never exercised the deferral the sweep is measuring.
-  const pass = input.pending === 0 && input.spoolFiles === 0 && input.liveBatches === 0
+  // #336: this fixture never chooses work, so awaiting sources indicate a storage fault.
+  const pass = input.pending === 0 && input.awaiting === 0 && input.spoolFiles === 0 && input.liveBatches === 0
     && input.workerErrors === 0 && (input.badEnds ?? []).length === 0
     && input.processed === 0 && input.waiting > 0
     && input.endReason === 'stopped' && input.stopMarker === false;
@@ -792,7 +794,7 @@ async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
   const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
-  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 0, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
+  const stuckOk = { pending: 0, awaiting: 0, waiting: 4, parked: 0, legacy: 0, processed: 0, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
   assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
   const mixed = checkRetained({ markers: [hit('miss', 'done', 0), hit('dup', 'done', 2)], sessions: sess, spoolFiles: 0 });
   assert.equal(mixed.pass, false); assert.deepEqual(mixed.missing, ['miss']); assert.deepEqual(mixed.duplicate, ['dup']);
@@ -819,12 +821,14 @@ async function selfCheck() {
   assert.equal(checkRetained({ markers: [hit('a', 'done')], sessions: sess, spoolFiles: 0, prior: { rows: 1322, kept: 1322, failed: 0, deadline: 3 } }).pass, true, 'a row that failed closed on the hook budget is the product working');
   assert.equal(checkNotStuck(stuckOk).pass, true);
   assert.equal(checkNotStuck({ ...stuckOk, pending: 1 }).pass, false);
+  assert.equal(checkNotStuck({ ...stuckOk, awaiting: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, workerErrors: 1 }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, badEnds: ['batch_error'] }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, stopMarker: true }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, endReason: 'idle_exit' }).pass, false);
   assert.equal(checkNotStuck({ ...stuckOk, processed: 1 }).pass, false, 'preset none can process nothing');
   assert.equal(checkNotStuck({ ...stuckOk, waiting: 0 }).pass, false, 'a run that deferred nothing measured no deferral');
+  assert.deepEqual(parseGeneration('Retained sources: 3 pending; 9697 waiting; 4 parked; 7 incomplete captures; 5 legacy sources held; 8 privacy exclusions; 6 processed (9 recovered); 2 awaiting a work choice.'), { pending: 3, awaiting: 2, waiting: 9697, parked: 4, legacy: 5, processed: 6 });
   assert.equal(countBatchLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0, Date.now()), 0);
   assert.equal(countErrorLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0), 1);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=1 reason=batch_error\n', 0), ['batch_error']);
@@ -903,7 +907,7 @@ function checkRows(report) {
   }
   return [
     ['retained', yn(c.retained.pass), `missing=${c.retained.missing.join(',') || 'none'} duplicate=${c.retained.duplicate.join(',') || 'none'} failed-classification=${c.retained.failed.join(',') || 'none'} sessionFail=${c.retained.sessionFail.join(',') || 'none'} phase-A rows kept=${c.retained.prior?.kept ?? 0}/${c.retained.prior?.rows ?? 0} detector-failed=${c.retained.prior?.failed ?? 0} fail-closed-on-deadline=${c.retained.prior?.deadline ?? 0} spoolFiles=${c.retained.spoolFiles}`],
-    ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
+    ['not-stuck', yn(c.notStuck.pass), `pending=${c.notStuck.pending} awaiting=${c.notStuck.awaiting} waiting=${c.notStuck.waiting} parked=${c.notStuck.parked} legacy=${c.notStuck.legacy} processed=${c.notStuck.processed} spoolFiles=${c.notStuck.spoolFiles} liveBatches=${c.notStuck.liveBatches} endReason=${c.notStuck.endReason ?? 'unread'} stopMarker=${c.notStuck.stopMarker === true} workerErrors=${c.notStuck.workerErrors} badEnds=${(c.notStuck.badEnds ?? []).join(',') || 'none'}. ${c.notStuck.note}`],
     ['wal-recycled', yn(c.wal.pass), `start=${c.wal.start} peak=${c.wal.peak} final=${c.wal.final} grew=${c.wal.grew} pass-if final<=peak*${c.wal.fraction} batchesHeld=${c.wal.batchesHeld ?? 0}`],
     ['rss-bound', yn(c.rss.pass), `maxHwm=${c.rss.maxHwm} KiB (${kibToMib(c.rss.maxHwm)} MiB) bound=${c.rss.boundKib} KiB; phase A ${c.rss.phaseAHwmKb} KiB; children n=${c.rss.childCount ?? 0} max=${c.rss.childMax ?? 0} KiB unmeasured=${(c.rss.unmeasured ?? []).length} unsampled residents=${(c.rss.unsampledWorkers ?? []).length}. ${c.rss.note}`],
   ];

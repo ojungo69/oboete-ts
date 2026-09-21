@@ -20,7 +20,7 @@ import type { OboetePaths } from '../paths.js';
 import { describe } from '../setup/report.js';
 import { listSpool } from '../spool.js';
 import { consentDrift, loadSyncConfig } from '../sync/status.js';
-import { SOURCE_METADATA_COLUMNS, SUMMARIZABLE_ROW_SQL, type RawEventRow } from '../worker/batches.js';
+import { RESOLVED_WORK_SQL, SOURCE_METADATA_COLUMNS, SUMMARIZABLE_ROW_SQL, type RawEventRow } from '../worker/batches.js';
 import { stale } from '../worker/lease.js';
 
 const DATABASE_TIMEOUT_MS = 5_000;
@@ -375,32 +375,60 @@ function workerLeaseItem(
   }
 }
 
+type GenerationCounts = {
+  pending: number; waiting: number; parked: number; processed: number; legacy_unknown: number;
+  excluded: number; partial: number; recovered: number; awaiting: number; unbound: number;
+};
+
+/** #336: SQL IN can be NULL for an unbound source; only 1 proves resolved work. */
+function sourceBucket(row: RawEventRow, workResolved: unknown): keyof GenerationCounts {
+  if (row.processing_state === 'pending' && workResolved !== 1) return 'awaiting';
+  if (row.processing_state === 'waiting' && row.retry_after === null) return 'parked';
+  return row.processing_state ?? 'pending';
+}
+
+function generationSeverity(counts: GenerationCounts): typeof degraded | typeof warning | null {
+  if (counts.waiting > 0 || counts.partial > 0) return degraded;
+  if (counts.pending > 0 || counts.legacy_unknown > 0 || counts.parked > 0 || counts.awaiting > 0) return warning;
+  return null;
+}
+
+/** `work choose` reaches a source through its binding; one with no binding needs `choose-source`. */
+function workChoiceSteps(counts: GenerationCounts): string {
+  let steps = '';
+  if (counts.awaiting > counts.unbound) steps += ' `oboete work status` lists the choices; `oboete work choose <binding-id> <work-id|new>` resolves an open binding or a late-source span.';
+  if (counts.unbound > 0) steps += ' A source with no binding takes `oboete work choose-source <source-id> <work-id|new>`.';
+  return steps;
+}
+
 /** Provider connectivity cannot prove that retained source material has actually been processed. */
 export function generationItem(db: DatabaseSync | null, integrityFailed: boolean): DoctorItem {
   if (db === null) return dbUnread('generation', integrityFailed,
     'The database is unavailable, so source processing could not be verified.',
     'Generation progress is unknown.', '`oboete doctor` after storage is repaired.');
-  const counts = { pending: 0, waiting: 0, parked: 0, processed: 0, legacy_unknown: 0, excluded: 0, partial: 0, recovered: 0 };
-  const rows = db.prepare(`SELECT ${SOURCE_METADATA_COLUMNS}, EXISTS (
+  const counts: GenerationCounts = { pending: 0, waiting: 0, parked: 0, processed: 0, legacy_unknown: 0,
+    excluded: 0, partial: 0, recovered: 0, awaiting: 0, unbound: 0 };
+  const rows = db.prepare(`SELECT ${SOURCE_METADATA_COLUMNS}, (${RESOLVED_WORK_SQL}) AS work_resolved, EXISTS (
     SELECT 1 FROM observation_batch_sources s WHERE s.raw_event_id = raw_events.id
       AND s.outcome IN ('deferred', 'rejected', 'uncovered') AND s.reason IS NOT 'not_sent'
   ) AS previously_deferred FROM raw_events WHERE processing_state = 'excluded' OR ${SUMMARIZABLE_ROW_SQL}`);
   for (const stored of rows.iterate()) {
     const row = stored as unknown as RawEventRow;
-    if (row.processing_state === 'waiting' && row.retry_after === null) counts.parked += 1;
-    else counts[row.processing_state ?? 'pending'] += 1;
+    const bucket = sourceBucket(row, stored.work_resolved);
+    counts[bucket] += 1;
+    if (bucket === 'awaiting' && row.work_binding_id === null) counts.unbound += 1;
     if (row.classification_state === 'partial') counts.partial += 1;
     if (row.processing_state === 'processed' && stored.previously_deferred === 1) counts.recovered += 1;
   }
   const reason = `Retained sources: ${counts.pending} pending; ${counts.waiting} waiting; ` +
     `${counts.parked} parked; ${counts.partial} incomplete captures; ${counts.legacy_unknown} legacy sources held; ` +
-    `${counts.excluded} privacy exclusions; ${counts.processed} processed (${counts.recovered} recovered).`;
-  const describe = counts.waiting > 0 || counts.partial > 0 ? degraded
-    : counts.pending > 0 || counts.legacy_unknown > 0 || counts.parked > 0 ? warning : null;
+    `${counts.excluded} privacy exclusions; ${counts.processed} processed (${counts.recovered} recovered); ${counts.awaiting} awaiting a work choice.`;
+  const describe = generationSeverity(counts);
   if (describe === null) return healthy('generation', reason);
   return describe('generation', reason,
     'Temporary guidance may be available while accepted information is still unprocessed.',
-    '`oboete observe` processes due work; `oboete why <session-id>` explains source outcomes. Incomplete captures need the original complete input; legacy sources require explicit reprocessing.');
+    '`oboete observe` processes due work; `oboete why <session-id>` explains source outcomes. Incomplete captures need the original complete input; legacy sources require explicit reprocessing.' +
+    workChoiceSteps(counts));
 }
 
 export function spoolItem(paths: OboetePaths): DoctorItem {

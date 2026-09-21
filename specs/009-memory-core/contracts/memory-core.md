@@ -80,7 +80,12 @@ update as historical evidence pointing to the newer record, and record an old de
 non-mutating historical decision. Source capture time determines this order; processing time
 does not. Unmatched contradictions remain a separate recall-quality acceptance test.
 
-`doctor` reports source processing independently from provider connectivity. `why <session-id>`
+`doctor` reports source processing independently from provider connectivity. Its `generation`
+item counts a summarizable pending source whose work is not resolved as `awaiting a work choice`,
+not as `pending`, stays at least a warning while any remain, and names the next steps:
+`oboete work status` and `oboete work choose <binding-id> <work-id|new>` for an open binding or a
+late-source span, and `oboete work choose-source <source-id> <work-id|new>` for a source with no
+binding (#336). Such a source does not hold back its session's summary. `why <session-id>`
 reports at most 100 retained source IDs with cursor/outcome/retry metadata, never raw or provider
 bodies. Receipts retain turn membership and fixed historical-update/delete decisions, including
 the protected target and capture-order reason. After raw expiry they report unavailable source

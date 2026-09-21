@@ -165,7 +165,7 @@ Owner amendment, 2026-09-10:
   no spool file at any sample, and every hook exiting 0. The 10,000-event leg passes every gated check on both
   versions after #332 (peak 131.07 MiB on 22.x, 128.06 MiB on 24.x). Two further 24.x runs stopped with a harness error: a worker
   SQLite error of unidentified cause during phase B spooled captures, and the harness waited on sources awaiting a
-  work choice (#336). The 100,000-event leg is #267, the
+  work choice (#336; since its fix the harness reports them and fails `not-stuck` instead). The 100,000-event leg is #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
   so the sweep runs with `[observer] preset = "none"` and reports SC-009 recall 0/40 rather than gating it.
 - [X] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.

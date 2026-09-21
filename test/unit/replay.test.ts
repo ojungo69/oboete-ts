@@ -11,6 +11,7 @@ import { classifyStartSample, holdLease, releaseHeldLease, replayEnv, replayHome
 import { openDatabase } from '../../src/db/open.js';
 import { oboetePaths } from '../../src/paths.js';
 import { withTempHome } from '../helpers/home.js';
+import { seedWorkBinding } from '../helpers/work.js';
 import { claimLease } from '../../src/worker/lease.js';
 
 test('replay cannot steal a live worker lease or clear a successor owner', async () => {
@@ -46,6 +47,7 @@ test('replay barrier uses target receipts and current summaries, including degra
           VALUES ('e', 'r', 's', 'prompt', 'Retained fact', 'done', 'waiting');
         INSERT INTO observation_batch_sources (batch_id, raw_event_id, outcome, recorded_at)
           VALUES ('b', 'e', 'deferred', 100);`);
+      db.prepare('UPDATE raw_events SET work_binding_id = ?').run(seedWorkBinding(db, 's'));
       assert.equal(replayTargetsSettled(db, 'r', ['s']), true);
       assert.equal(replayTargetsSettled(db, 'other', ['s']), false);
       for (const change of [
@@ -69,6 +71,26 @@ test('replay barrier uses target receipts and current summaries, including degra
         timeoutMs: 100, now: () => now, sleep: async (ms) => { now += ms; },
       }), /worker_settle_timeout/);
       await assert.rejects(waitForReplaySettlement(join(home, 'missing', 'db'), 'r', [], worker), /storage_error/);
+    } finally { db.close(); }
+  });
+});
+
+test('replay settles pending sources awaiting a work choice but waits for resolved work (#336)', async () => {
+  await withTempHome((home) => {
+    const { db } = openDatabase({ path: oboetePaths(home).db, timeoutMs: 1_000 });
+    try {
+      db.exec(`INSERT INTO repos (id, identity_kind, normalized_identity) VALUES ('r', 'common_dir', '/r');
+        INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, status, summary_state, summary_updated_at)
+          VALUES ('s', 'r', 'claude', 'native', 's', 'ended', 'pending', 100);`);
+      const binding = seedWorkBinding(db, 's');
+      db.prepare(`INSERT INTO raw_events (id, repo_id, session_id, kind, content, classification_state, processing_state, work_binding_id)
+        VALUES ('e', 'r', 's', 'prompt', 'Retained source', 'done', 'pending', ?)`).run(binding);
+      assert.equal(replayTargetsSettled(db, 'r', ['s']), false);
+
+      db.prepare("UPDATE work_bindings SET work_id = NULL, reason = 'late_source' WHERE id = ?").run(binding);
+      assert.equal(replayTargetsSettled(db, 'r', ['s']), true);
+      db.exec('UPDATE raw_events SET work_binding_id = NULL');
+      assert.equal(replayTargetsSettled(db, 'r', ['s']), true);
     } finally { db.close(); }
   });
 });

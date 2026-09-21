@@ -29,6 +29,7 @@ import { detectSync, type DetectorInput, type DetectorResult } from '../privacy/
 import {
   classifyPending,
   DUE_SOURCE_SQL,
+  RESOLVED_WORK_SQL,
   RECLAIM_AFTER_MS,
   SUMMARIZABLE_ROW_SQL,
   createBatches,
@@ -197,8 +198,10 @@ function pendingSummaries(db: DatabaseSync, token: string, now: number): string[
            SELECT 1 FROM observation_batches b
            WHERE b.session_id = s.id AND b.state NOT IN ('applied', 'fallback')
          )
+         -- #336: a source awaiting a work choice is not due work, so it does not hold the summary back;
+         -- once chosen and processed, its batch completes after summary_updated_at and re-summarizes.
          AND NOT EXISTS (SELECT 1 FROM raw_events WHERE session_id = s.id AND batch_id IS NULL
-           AND ${DUE_SOURCE_SQL} AND ${SUMMARIZABLE_ROW_SQL})
+           AND ${DUE_SOURCE_SQL} AND ${SUMMARIZABLE_ROW_SQL} AND ${RESOLVED_WORK_SQL})
          AND (s.summary_updated_at IS NULL OR EXISTS (
            SELECT 1 FROM observation_batches b
            WHERE b.session_id = s.id AND b.completed_at > s.summary_updated_at

@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
+import { errorCode } from '../../src/log.js';
 import { cleanEnv, eventBase, runObserveForFixture, toggleDatabase, withFixture, writeConfig } from '../helpers/observe.js';
 
 // Not secret-shaped on purpose: what makes it a credential is the environment variable, not the
@@ -25,6 +26,16 @@ function assertNowhereUnder(home: string, value: string): void {
     assert.equal(readFileSync(file).includes(value), false, `${file} carries the credential value`);
   }
 }
+
+test('errorCode includes only SQLite numeric details and preserves other codes (#336)', () => {
+  assert.equal(errorCode({ code: 'ERR_SQLITE_ERROR', errcode: 5,
+    message: 'Captured source text', errstr: 'Private error detail' }), 'ERR_SQLITE_ERROR:5');
+  assert.equal(errorCode({ code: 'ERR_SQLITE_ERROR' }), 'ERR_SQLITE_ERROR');
+  assert.equal(errorCode({ code: 'ERR_SQLITE_ERROR', errcode: '5' }), 'ERR_SQLITE_ERROR');
+  assert.equal(errorCode({ code: 'EACCES', errcode: 5 }), 'EACCES');
+  assert.equal(errorCode(new TypeError('Captured source text')), 'TypeError');
+  assert.equal(errorCode(null), 'unknown');
+});
 
 test('FR-016: a provider credential pasted into a session reaches no stored row, spool file, log, pack, memory or doctor output', async () => {
   await withFixture(async (fixture) => {
