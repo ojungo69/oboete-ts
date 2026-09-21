@@ -2999,7 +2999,8 @@ that bracket the boundary. `two distinct facts in similar words survive a shallo
 kept, eleven being the deepest list that keeps it today. `a distinct fact behind a deeper candidate
 list is not dropped as redundant` is the same pair at twelve, fifteen and twenty, where the second
 is omitted as `mmr_redundant` while nothing is omitted as `budget`; it is committed skipped, the way
-the #275 artifact was. The rule is not even monotonic in depth — a list of sixteen keeps the pair
-again, because which rows are selected first changes what the pair is compared against. The assessment of the fix — including the cosine measurements that ruled out a
+the #275 artifact was. The filler rows are twenty distinct sentences rather than one template: a
+templated filler makes those rows near-duplicates of each other at cosine 0.90, they then compete
+in the selection order, and the boundary moves with them. The assessment of the fix — including the cosine measurements that ruled out a
 similarity cutoff — is a comment on #272, since `.specify/` is outside this repository by policy.
 T023 stays open for that leg, so this section closes one leg of the task and not the task.

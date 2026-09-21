@@ -934,12 +934,39 @@ test('searchMemories omits an unrelated memory from a five-row corpus', async ()
 // The controls for issue #272: the same pair, above the boundary. Eleven is the deepest list that
 // keeps both facts today, so these run and a change that loses the pair earlier is a regression
 // here rather than a surprise in the red case below.
+// Each filler row is its own sentence. A templated one ("note about subject number N") makes the
+// filler rows near-duplicates of each other at cosine 0.90, and then they compete in the selection
+// order, which moves the boundary around and makes it look as though the rule were not monotonic.
+const MMR_FILLER = [
+  'Deployment keys rotate on the first Monday of each month.',
+  'The viewer binds a loopback port chosen at launch.',
+  'Imported rows wait in quarantine until the worker classifies them.',
+  'A pack line is prefixed with a quotation marker.',
+  'Secretlint runs before the first write, including the spool.',
+  'The daily allowance is counted in Coordinated Universal Time.',
+  'Grok rewrites its configuration file without comments.',
+  'A tombstone keeps the material hash and drops the text.',
+  'Work selection is withheld when two items are active.',
+  'The replay harness reads a frozen fixture bundle.',
+  'Pi acknowledges its capture child before reading standard input.',
+  'A session summary is not bound to any work item.',
+  'The migration matrix covers behind, ahead and missing schemas.',
+  'Sync bundles are encrypted with a key kept in the sync directory.',
+  'Cold start is measured from process start to first write.',
+  'The observer answers no_memory when nothing is worth keeping.',
+  'A fallback target is refused unless the consent record matches.',
+  'Retirement applies to related memories, never to pins.',
+  'The CJK index is a bigram index, not a trigram one.',
+  'Doctor reports an ignored configuration key as a warning.',
+];
+
 function mmr272(depth: number) {
+  assert.ok(depth <= MMR_FILLER.length, `the filler list holds ${MMR_FILLER.length} distinct sentences`);
   const ahead = Array.from({ length: depth }, (_, index) =>
     row({
       id: `ahead-${String(index).padStart(2, '0')}`,
-      title: `unrelated ${index}`,
-      body: `An unrelated note about subject number ${index} and nothing else.`,
+      title: `note ${index}`,
+      body: MMR_FILLER[index]!,
       // Lower is better: `ranksFor` sorts BM25 ascending, so these rank above the pair below.
       scoreTrigram: -100 - index,
     }));
@@ -971,9 +998,8 @@ test('two distinct facts in similar words survive a shallow candidate list', () 
 // Artifact for issue #272, RED until the rule is fixed. Twelve is where the pair starts being
 // dropped: the candidate's relevance, normalized to the best RRF score, falls under its trigram
 // similarity to the row already selected, and `mmrSelect` rejects it outright instead of ranking
-// it lower. Eleven is pinned above, so the two tests bracket the boundary. Sixteen is included
-// deliberately: the rule is not even monotonic in depth — that list keeps the pair again, because
-// which rows are selected first changes what the pair is compared against.
+// it lower. Eleven is pinned above, so the two tests bracket the boundary, and everything deeper
+// stays dropped.
 test('a distinct fact behind a deeper candidate list is not dropped as redundant',
   { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
     for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
