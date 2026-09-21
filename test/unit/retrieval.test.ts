@@ -956,10 +956,12 @@ function assertPairKept(result: ReturnType<typeof mmr272>, depth: number): void 
     [],
     `the budget cut fired at depth ${depth}, so this case no longer isolates the MMR rule`,
   );
-  assert.ok(
-    result.included.some((item) => item.id === 'cli'),
-    `at depth ${depth} the CLI fact was omitted as ${result.omitted.find((item) => item.id === 'cli')?.reason ?? 'absent'}`,
-  );
+  for (const id of ['hooks', 'cli']) {
+    assert.ok(
+      result.included.some((item) => item.id === id),
+      `at depth ${depth} the ${id} fact was omitted as ${result.omitted.find((item) => item.id === id)?.reason ?? 'absent'}`,
+    );
+  }
 }
 
 test('two distinct facts in similar words survive a shallow candidate list', () => {
