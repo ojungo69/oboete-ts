@@ -2951,3 +2951,40 @@ described it wrongly:
 Two verifier verdicts were overturned on re-reading: T034 reads "using `src/transfer.ts`", and the
 record iterators it means were extracted to `src/transfer-records.ts` and are imported by
 `src/sync/capture.ts` and `src/sync/apply.ts`; T040's gap was an artifact its line never asked for.
+
+## E18 — the retrieval misses are closed and the closure is measured (T023)
+
+T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
+rather than tuning it, and this section is the check that the list is now satisfied in the code
+rather than in intention. Everything below was run at `c5195838`.
+
+- **The artifact runs.** `searchMemories returns the fact-bearing memory of a five-row corpus`
+  (`test/unit/retrieval.test.ts:864`) carries the five rows of the `claude-to-codex` pair of the
+  `2026-09-17T15-05-08-894Z` dogfood run and is no longer skipped. It passes.
+- **Admission is still the index's own match.** `searchMemories still returns the fact-bearing
+  memory with a non-matching sixth row` (`:880`) adds a Japanese row that shares no trigram with the
+  English prompt and asserts both that `m_fact` is returned and that `m_unrelated` is not. Retiring
+  a threshold did not turn retrieval into "return everything".
+- **The pack path, not only the query.** `buildPromptPack on the five-row receipt carries the three
+  fact strings through the trigram index` (`:977`) builds the real pack over the same five rows and
+  asserts each fact string reaches its text — the pack path is where the dogfood run dropped the
+  row, since it adds delivery filtering, retirement and the budget cut on top of the ranker. The
+  same test pins the mechanism: `factRow.scoreTrigram` is not null and `factRow.viaLike` is false,
+  so the rescued row arrives through the trigram index and not the LIKE fallback, and every new
+  ledger row writes `score_bm25 = null`.
+- **The replacement mutation.** The retired `threshold = 0.99` mutation guarded the mechanism that
+  was removed, so it was replaced by one that reintroduces magnitude-based exclusion: an early
+  `if (row.scoreTrigram !== null && row.scoreTrigram > -0.001) return { ...row, score_rrf: 0 };` in
+  `rrfFuse` (`src/retrieval/rank.ts:48`). Four tests fail under it — the two `searchMemories` cases
+  above (both return `m_confirm` alone, which is exactly the #275 shape), `order-preserving
+  rescaling of either index does not change rankCandidates selection`, and the `buildPromptPack`
+  receipt. The mutation was reverted and the file is unchanged.
+- **The legacy key is inert.** `a config with the legacy threshold key retrieves the same as one
+  without` (`:954`) writes `[injection] threshold = 0.99` and compares results with a config that
+  has none. `doctor reports a set injection.threshold as ignored` and `why still explains a
+  historical below_threshold ledger row` keep the old ledger rows readable.
+- **Nothing else regressed.** `npm test` at this revision: 1,661 passing and 0 failing in the
+  parallel leg, 280 passing and 0 failing in the serial leg, exit 0. The two skips are the
+  `OBOETE_SYNC_HEAVY` bounds tests, not the artifact.
+
+What is not closed is #272, the MMR depth observation, which this task records rather than claims.

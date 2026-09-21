@@ -59,7 +59,7 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
 
 - [X] T021 [US3] Correct readiness/lease barriers and prior-delivery accounting in `src/fixture/replay.ts` and `src/fixture/replay-evaluate.ts`, with a focused `test/unit/replay-evaluate.test.ts` regression.
 - [X] T022 [US3] Add source-stage accounting and inspectable omission reasons in `src/fixture/replay-evaluate.ts`, `src/why.ts` and `src/fixture/replay-report.ts`.
-- [ ] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
+- [X] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
   `src/db/queries.ts` and `test/unit/retrieval.test.ts`. Status: none reproduce on the `events-1000` corpus
   (the no-model replay stops every fact before ranking; stored verbatim, all 40 fixture facts rank within the
   first five), pinned in `test/unit/retrieval.test.ts`; the MMR depth observation is #272. The open miss is the
@@ -75,6 +75,10 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   and — replacing the retired `threshold = 0.99` mutation, which guarded the mechanism being removed — a
   mutation that reintroduces magnitude-based exclusion, plus a pin that a config carrying the legacy
   `threshold` key retrieves exactly as one without it.
+  Closed 2026-09-21: every item above is in place and was measured, not assumed. The artifact runs
+  unskipped, the mutation was applied to `rrfFuse` and killed by four tests, and the whole suite is
+  green at 1,661 passing with the two skips being the `OBOETE_SYNC_HEAVY` bounds tests. The residue
+  is #272, the MMR depth observation, which this task never claimed. See E18 in `quickstart.md`.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 
 ## Phase 6: US4 — Share at the correct scope (P1)
