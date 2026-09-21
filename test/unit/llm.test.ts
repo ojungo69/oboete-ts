@@ -234,7 +234,8 @@ test('a json_object preset sends the observer schema in its system prompt', asyn
   const schema = JSON.stringify(observerOutputJsonSchema);
   const cases = [
     { preset: 'openrouter', credentials: apiCredentials(), schemaInPrompt: true },
-    { preset: 'ollama', credentials: { kind: 'none', present: true, source: 'none', values: {} }, schemaInPrompt: true },
+    // Ollama constrains decoding to the schema it receives in response_format.
+    { preset: 'ollama', credentials: { kind: 'none', present: true, source: 'none', values: {} }, schemaInPrompt: false },
     {
       preset: 'workers-ai',
       credentials: { kind: 'cloudflare', present: true, source: 'test', values: { accountId: 'account-123', token: 'test-token' } },
@@ -254,7 +255,10 @@ test('a json_object preset sends the observer schema in its system prompt', asyn
       const messages = requestBody?.messages as { role: string; content: string }[] | undefined;
       const system = messages?.find((message) => message.role === 'system')?.content ?? '';
       assert.equal(system.includes(schema), schemaInPrompt);
-      if (preset === 'ollama') assert.equal(requestBody?.reasoning_effort, 'none', 'thinking is off for the observer call');
+      if (preset === 'ollama') {
+        assert.equal(requestBody?.reasoning_effort, 'none', 'thinking is off for the observer call');
+        assert.equal((requestBody?.response_format as { type?: string } | undefined)?.type, 'json_schema');
+      }
     });
   }
 });

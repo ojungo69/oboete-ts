@@ -70,7 +70,9 @@ export const PRESET_CATALOG: Record<PresetName, ProviderPreset> = {
     egress: 'local',
     // The installed models differ per machine, so this preset takes its model from [observer] model.
     defaultModel: '',
-    structuredOutput: 'response_format',
+    // Grammar-constrained. With the schema only in the prompt, 3 of 19 replay batches from
+    // gemma4:12b validated; constrained, 7 of 20, and no failure was a shape error (2026-09-21).
+    structuredOutput: 'json_schema',
     capped: false,
   },
   nim: {
