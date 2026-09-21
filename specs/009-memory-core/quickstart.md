@@ -2832,6 +2832,9 @@ the seams instead: the schema against its readers, the `classification_state` an
 contract from capture through the worker to injection, what privacy and sharing allow out of the
 store, the worker lifecycle, and the CLI and MCP surfaces against `contracts/`.
 
+The pass itself read `590c0a2f..e19acd8e`; the one commit after it, the #310 fix, is covered by
+this checkpoint's own security review, which found it, and by that pull request's review.
+
 Four defects came out of it, each verified against the source here and filed rather than fixed,
 because each is a decision about which side of a seam should change: quarantine release converges
 onto an existing memory without the sensitivity merge the importer performs (#314); generation can

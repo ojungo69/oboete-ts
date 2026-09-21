@@ -149,7 +149,7 @@ Owner amendment, 2026-09-10:
   nothing over `src` and `scripts` with 458 rules unavailable outside its Pro engine. The scoped
   security review replaces the B4 report, whose draft no longer exists; it found one defect, fixed
   in #310, and left #311, #312 and #313 open. The cross-slice review filed #314, #315, #316 and
-  #317. #310 is merged.
+  #317, and the over-engineering pass over the whole feature filed #321. #310 is merged.
 - [ ] T044 Update `README.md` and user-facing help with only verified capabilities and remaining limitations.
 - [ ] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
 
