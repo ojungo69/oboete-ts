@@ -2766,3 +2766,81 @@ provider runs at all, so SC-009 recall is 0/40 by construction and is reported, 
 model consumption needs a model this task is not authorised to activate. T042 therefore stays open
 with its three named legs outstanding, which is why its line in `tasks.md` carries the status rather
 than an `[X]`.
+
+## E15 — cohesive verification of the assembled feature (T043)
+
+Run on 2026-09-21 against `e19acd8e`, the merge of #306, on both supported Node versions from the
+same working tree.
+
+### Gates
+
+`npm run typecheck`, `npm run lint`, `npm run build`, `npm test` and `npm run pack-check` each exit 0
+on Node 24.16.0 and on 22.23.1. The suite is 1,663 tests with 1,661 passing, 0 failing and 2 skipped
+(the two 256 MiB sync cases, which need `OBOETE_SYNC_HEAVY=1`), followed by the 280-test bundle,
+which passes in full. The figures are identical on both versions.
+
+`semgrep scan --config p/javascript --config p/typescript --config p/secrets --config p/nodejs` over
+`src` and `scripts` reports no findings. It is a partial result: 458 rules could not run, each
+reporting that its operator is supported only in the Pro engine, so this says the open rules found
+nothing, not that the file set is clean.
+
+### Security review
+
+The B4 review's packaged report was never produced — its draft lived in a `security-b4/` run
+directory that no longer exists, and the plugin's data directory is empty. This checkpoint replaces
+it with a scoped review rather than claiming the old one, and it is a review of the source, not an
+execution: nothing was run, and no finding below was reproduced.
+
+The scope was capture and redaction (`src/capture.ts`), secret propagation
+(`src/worker/batches.ts`), what reaches a provider (`src/observer/`), grants and imported records
+(`src/sharing.ts`, `src/transfer*.ts`), what leaves the machine (`src/sync/`), what reaches an
+agent's context (`src/injection/`), and the two command surfaces (`src/cli.ts`, `src/mcp.ts`). Each
+function's assumptions, guarantees and dependencies were written down first, so that a caller's
+guarantee would not be mistaken for a missing check.
+
+One defect was confirmed and fixed in #310: staging read a memory payload's `deleted_at` as proof
+that the line carried no text and skipped the material-hash comparison, while apply takes deletion
+from the line's control, so a hand-written line that set one without the other blanked a live row
+with no tombstone, no conflict and nothing in `sync status`. `controlOf` derives one from the other,
+so no honest sender produces that pair. Absence of text is now decided by the control alone and the
+divergent pair is rejected as `deleted_without_tombstone`.
+
+Three findings are open as issues: provider-chosen citation paths are `existsSync`'d without a
+containment check or a budget (#311), a pulled work context can lower `repo_secret_paths_json` that
+the local writer protects with a monotonicity guard (#312), and the delivery-time privacy re-check
+has no test in either direction (#313). No P0 or P1 was found.
+
+What the review did not cover, so the limits are on the record: `src/viewer/server.ts` beyond its
+browser spawn, the `src/setup/` parsers, `src/retrieval/rank.ts`, the migration DDL triggers, and
+whether `reclassifyImported`'s 100-row budget keeps up with quarantine.
+
+### Cross-slice review
+
+The slices of 009 were each reviewed line by line when they landed, and re-reviewing the whole
+`590c0a2f..e19acd8e` range (177 files, ~29,800 added lines) does not converge. This pass reviewed
+the seams instead: the schema against its readers, the `classification_state` and `processing_state`
+contract from capture through the worker to injection, what privacy and sharing allow out of the
+store, the worker lifecycle, and the CLI and MCP surfaces against `contracts/`.
+
+Four defects came out of it, each verified against the source here and filed rather than fixed,
+because each is a decision about which side of a seam should change: quarantine release converges
+onto an existing memory without the sensitivity merge the importer performs (#314); generation can
+write reciprocal dependency edges that the export's acyclicity check then refuses, so a store can
+become unexportable (#315); `oboete why` builds its scope without a work, so a work-bound trace comes
+back empty instead of out of scope (#316); and the Pi tool wrappers forward no work binding, so a
+checkpoint delivered by injection cannot be fetched back (#317).
+
+### Deliberate simplifications
+
+Fifteen `ponytail:` comments in `src/` name a ceiling and the condition that would raise it — a
+quadratic prefix parse in `setup/managed-block.ts`, per-row scans in `sync/capture.ts` and
+`sync/apply.ts`, the 50-row and 2 MiB provenance bound in `transfer-claude-mem.ts`, the 50-row
+listing cap in `db/queries.ts`, and the rest. They are inventoried here as accepted debt with a
+named trigger, not as open defects.
+
+### What this checkpoint does not close
+
+T043 covers the assembled feature as it stands at `e19acd8e` plus #310. It does not close T024 or
+T041, whose legs are deferred by owner decision, and it does not revisit T042's outstanding legs
+(#267, #268). The seven issues above are the work it found; none of them blocks the milestone, and
+each is recorded where the code is rather than only here.
