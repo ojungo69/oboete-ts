@@ -2769,8 +2769,9 @@ than an `[X]`.
 
 ## E15 — cohesive verification of the assembled feature (T043)
 
-Run on 2026-09-21 against `e19acd8e`, the merge of #306, on both supported Node versions from the
-same working tree.
+Run on 2026-09-21. The gates were run twice: first against `e19acd8e`, the merge of #306, and
+again against `9397a85a`, the merge of #310, which is the revision this checkpoint covers. The
+figures below are the second run, with the documentation commits of this branch on top of it.
 
 ### Gates
 
@@ -2778,6 +2779,11 @@ same working tree.
 on Node 24.16.0 and on 22.23.1. The suite is 1,663 tests with 1,661 passing, 0 failing and 2 skipped
 (the two 256 MiB sync cases, which need `OBOETE_SYNC_HEAVY=1`), followed by the 280-test bundle,
 which passes in full. The figures are identical on both versions.
+
+22.23.1 is not the floor the package advertises. `engines.node` is `>=22.16`, and 22.16.0 is not
+installed on this host, so the floor is covered by continuous integration rather than here: the
+`engine (22.16.0)` job is green on this branch's head and on `9397a85a`. Read the local legs as
+24.16.0 and a later 22.x, with the floor itself attested by CI on the same revisions.
 
 `semgrep scan --config p/javascript --config p/typescript --config p/secrets --config p/nodejs` over
 `src` and `scripts` reports no findings. It is a partial result: 458 rules could not run, each
@@ -2808,7 +2814,11 @@ divergent pair is rejected as `deleted_without_tombstone`.
 Three findings are open as issues: provider-chosen citation paths are `existsSync`'d without a
 containment check or a budget (#311), a pulled work context can lower `repo_secret_paths_json` that
 the local writer protects with a monotonicity guard (#312), and the delivery-time privacy re-check
-has no test in either direction (#313). No P0 or P1 was found.
+is only partly pinned (#313). The last one was narrowed after review: `test/unit/work-readers.test.ts`
+does cover the refusal side, at line 219 for changed repository rules and credentials and at line 96
+for a source that became ineligible, all through `attachOnPreToolUse` returning null. What has no
+test is the guard reached through an explicitly set `privacyGuard`, and the delivering direction.
+No P0 or P1 was found.
 
 What the review did not cover, so the limits are on the record: `src/viewer/server.ts` beyond its
 browser spawn, the `src/setup/` parsers, `src/retrieval/rank.ts`, the migration DDL triggers, and
