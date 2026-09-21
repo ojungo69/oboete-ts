@@ -119,6 +119,19 @@ function shortReplayFixture(home: string): string {
   return path;
 }
 
+test('--settle-ms accepts only a positive whole number of milliseconds', async () => {
+  await withTempHome((home) => {
+    const path = shortReplayFixture(home);
+    for (const value of ['0', '-5', '1.5', 'abc', '']) {
+      const refused = spawnSync(process.execPath, ['dist/oboete.mjs', 'fixture', 'replay', path, '--home', home, '--json', `--settle-ms=${value}`],
+        { encoding: 'utf8', timeout: 10_000, env: { ...process.env, HOME: home } });
+      assert.equal(refused.status, 2, value);
+      assert.match(refused.stderr, /--settle-ms must be a positive whole number of milliseconds/);
+      assert.equal(existsSync(oboetePaths(home).db), false, 'refused before any hook or worker starts');
+    }
+  });
+});
+
 test('--pass-credentials is refused before anything starts unless the consent record matches (#328)', async () => {
   await withTempHome((home) => {
     const path = shortReplayFixture(home);
@@ -298,6 +311,7 @@ test('renderer preserves the report sections, supplied bounds, and failure evide
     bundle: process.execPath,
     startedAt: '2026-09-09T00:00:00.000Z',
     loadAtStart: '0.00 0.00 0.00',
+    settleMs: 300_000,
   };
   const computed: ReportComputed = {
     dbBytesAfter: 200,
@@ -355,6 +369,7 @@ test('renderer preserves the report sections, supplied bounds, and failure evide
   const rendered = renderReport(input, computed, bounds);
 
   assert.equal(rendered.failed, true);
+  assert.match(rendered.markdown, /Worker settle bound: 300000 ms per wait/);
   assert.deepEqual(rendered.json.bounds, bounds);
   assert.deepEqual(rendered.json.hooks, { n: 1, failures: 1, pass: false });
   assert.deepEqual(rendered.markdown.match(/^### .+$/gm), [

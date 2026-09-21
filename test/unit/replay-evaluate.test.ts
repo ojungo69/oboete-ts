@@ -194,6 +194,7 @@ test('completed-run evaluation reads the migrated database and returns every ver
         bundle: process.execPath,
         startedAt: '2026-09-09T00:00:00.000Z',
         loadAtStart: '0.00 0.00 0.00',
+        settleMs: 300_000,
       };
 
       const evaluated = measure(opened, paths, input);

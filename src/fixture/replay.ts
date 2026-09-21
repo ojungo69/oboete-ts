@@ -188,12 +188,14 @@ function bundlePath(): string {
 function usage(): string {
   return (
     'Usage: oboete fixture replay <file> [--out <markdown file>] [--json] [--home <dir>] [--keep]\n'
-    + '       [--pass-credentials]\n'
+    + '       [--pass-credentials] [--settle-ms <ms>]\n'
     + '--out replaces the "## Fixture replay (T068)" section of a Markdown file that already\n'
     + 'exists and already has that heading; it does not create the file.\n'
     + '--pass-credentials keeps oboete\'s credential variables for the replay\'s own hooks and\n'
     + 'workers, so a remote preset can be evaluated. It is refused unless the home\'s consent\n'
     + 'record matches its configuration. Off by default: the replay strips them.\n'
+    + '--settle-ms bounds each wait for the worker to finish the ended sessions (default 300000).\n'
+    + 'A real provider needs longer than the rule-based fallback; the bound never extends itself.\n'
   );
 }
 
@@ -615,7 +617,8 @@ function corpus(root: string): {
 }
 
 type ReplayPlan = {
-  values: { out?: string; json?: boolean; home?: string; keep?: boolean; 'pass-credentials'?: boolean };
+  values: { out?: string; json?: boolean; home?: string; keep?: boolean; 'pass-credentials'?: boolean; 'settle-ms'?: string };
+  settleMs: number;
   fixturePath: string;
   outPath: string | undefined;
   root: string;
@@ -663,6 +666,7 @@ function replayArgv(argv: string[]): { values: ReplayPlan['values']; fixture: st
         home: { type: 'string' },
         keep: { type: 'boolean' },
         'pass-credentials': { type: 'boolean' },
+        'settle-ms': { type: 'string' },
       },
     });
   } catch (error) {
@@ -683,6 +687,11 @@ function replayPlan(argv: string[]): ReplayPlan | number {
   if (typeof parsed === 'number') return parsed;
   const { values, fixture } = parsed;
 
+  const settleMs = values['settle-ms'] === undefined ? WORKER_SETTLE_MS : Number(values['settle-ms']);
+  if (!Number.isSafeInteger(settleMs) || settleMs <= 0) {
+    process.stderr.write(`--settle-ms must be a positive whole number of milliseconds\n${usage()}`);
+    return 2;
+  }
   const fixturePath = resolve(fixture);
   if (!existsSync(fixturePath)) {
     process.stderr.write(`fixture file not found: ${fixturePath}\n`);
@@ -716,7 +725,7 @@ function replayPlan(argv: string[]): ReplayPlan | number {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
   }
-  return { values, fixturePath, outPath, root, bundle, lines, sessionWindows };
+  return { values, settleMs, fixturePath, outPath, root, bundle, lines, sessionWindows };
 }
 
 /**
@@ -769,6 +778,8 @@ type ReplayRun = {
   leaseToken: string | null;
   leaseFailure: ReplayFailure | null;
   endedTargets: Set<string>;
+  /** `--settle-ms`: the fixed bound of each wait for the worker to settle the ended targets. */
+  settleMs: number;
   fixtureSessions: Set<string>;
   liveObserve: ObserveProc | undefined;
 };
@@ -776,7 +787,7 @@ type ReplayRun = {
 /** Everything a replay accumulates while it runs, empty before its first hook. */
 function emptyTables(): Omit<
   ReplayRun,
-  'bundle' | 'repo' | 'home' | 'envBase' | 'paths' | 'lines' | 'maps' | 'lastStartSeq' | 'holdFromSeq'
+  'bundle' | 'repo' | 'home' | 'envBase' | 'paths' | 'lines' | 'maps' | 'lastStartSeq' | 'holdFromSeq' | 'settleMs'
 > {
   return {
     pendingHold: new Set<Agent>(),
@@ -819,6 +830,7 @@ function createRun(input: {
   lines: Line[];
   maps: ReturnType<typeof corpus>;
   sessionWindows: ReturnType<typeof lastSessions>;
+  settleMs: number;
 }): ReplayRun {
   const { lastStartSeq, holdFromSeq } = input.sessionWindows;
   const run: ReplayRun = {
@@ -831,6 +843,7 @@ function createRun(input: {
     maps: input.maps,
     lastStartSeq,
     holdFromSeq,
+    settleMs: input.settleMs,
     ...emptyTables(),
   };
   // Every fact the fixture plants, indexed before the first hook so recall can look one up.
@@ -1251,7 +1264,7 @@ async function observeNow(run: ReplayRun): Promise<void> {
   dropLease(run);
   startWorker(run);
   if (run.liveObserve === undefined) throw new ReplayFailure(1, 'worker_missing');
-  await waitForReplaySettlement(run.paths.db, run.repoId, [...run.endedTargets], run.liveObserve);
+  await waitForReplaySettlement(run.paths.db, run.repoId, [...run.endedTargets], run.liveObserve, waitOptions(run.settleMs));
   harvestRss(run);
   run.endedTargets.clear();
   await ensureLeaseHeld(run);
@@ -1329,7 +1342,7 @@ function measureRun(
 export async function runFixture(argv: string[]): Promise<number> {
   const plan = replayPlan(argv);
   if (typeof plan === 'number') return plan;
-  const { values, fixturePath, outPath, root, bundle, lines, sessionWindows } = plan;
+  const { values, settleMs, fixturePath, outPath, root, bundle, lines, sessionWindows } = plan;
 
   const maps = corpus(root);
   const { home, createdHome } = replayHome(values);
@@ -1346,7 +1359,7 @@ export async function runFixture(argv: string[]): Promise<number> {
   const envBase = replayEnv(home, {}, passCredentials);
   const startedAt = new Date().toISOString();
   const loadAtStart = loadAverage();
-  const run = createRun({ bundle, repo, home, envBase, paths, lines, maps, sessionWindows });
+  const run = createRun({ bundle, repo, home, envBase, paths, lines, maps, sessionWindows, settleMs });
   run.credentials.accountIds = accountIds;
   let workerPollDb: ReturnType<typeof openDatabase>['db'] | undefined;
   let workerPoll: ReturnType<typeof setInterval> | undefined;
@@ -1462,4 +1475,5 @@ export type MeasureInput = {
     bundle: string;
     startedAt: string;
     loadAtStart: string;
+    settleMs: number;
 };

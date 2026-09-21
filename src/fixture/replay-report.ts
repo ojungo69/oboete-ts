@@ -312,6 +312,7 @@ function setupSection(input: MeasureInput, machine: string, cpu: string): string
     `- Commit: \`${gitHead(repositoryRoot())}\`.`,
     `- Bundle: \`${input.bundle}\`, ${fileBytes(input.bundle)} bytes${beside}.`,
     `- Fixture: \`${input.fixturePath}\` (${input.lines.length} lines).`,
+    `- Worker settle bound: ${input.settleMs} ms per wait for the ended sessions (\`--settle-ms\`).`,
     `- \`OBOETE_HOME\`: \`${input.home}\`. Worker behavior uses this home's configuration; generation and delivery are scored separately below.`,
     `- Temporary git repository with one empty commit so \`HEAD\` exists. \`NODE_ENV=test\`.`,
     `- Worker RSS: Linux \`/proc/<pid>/status\` \`VmHWM\`, polled every 50 ms. Replay holds a fenced lease during capture and starts its own worker only when ended targets can drain; the child must exit before measurement. Automatic native-agent spawning is a separate qualification.`,
