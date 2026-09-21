@@ -24,6 +24,15 @@ targetRules = ["generic-api-key"]
 paths = ['''^(legacy/)?harness/evidence/secrets\.test\.ts$''']
 regexes = ['''^0123456789abcdefghij$''']
 
+# PR #335 の偽 account id（`{ id, secret }` の `secret:` キーで generic-api-key が鳴る）。
+# merge commit で main の履歴に残るので、この path のこの値 1 件だけを外す。
+[[allowlists]]
+description = "One fake Cloudflare account id in the replay privacy-check test."
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^test/unit/replay-evaluate\.test\.ts$''']
+regexes = ['''^acct-0123456789abcdef$''']
+
 # 合成シークレット corpus (T024)。secretlint が検出できる正しい形式である必要があるので、
 # 値を崩して gitleaks を避けることはできない。path だけでなく、この corpus が実際に
 # 鳴らす 16 ルールに限定して外す (他の型の本物の値はこのファイルでも検出される)。
