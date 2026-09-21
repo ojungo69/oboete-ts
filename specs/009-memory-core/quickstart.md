@@ -2840,7 +2840,7 @@ named trigger, not as open defects.
 
 ### What this checkpoint does not close
 
-T043 covers the assembled feature as it stands at `e19acd8e` plus #310. It does not close T024 or
+T043 covers the assembled feature as it stands at `e19acd8e` plus #310, which is merged. It does not close T024 or
 T041, whose legs are deferred by owner decision, and it does not revisit T042's outstanding legs
 (#267, #268). The seven issues above are the work it found; none of them blocks the milestone, and
 each is recorded where the code is rather than only here.
