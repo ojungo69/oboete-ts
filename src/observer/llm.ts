@@ -317,9 +317,10 @@ function buildProviderPrompt(
   input: ObserverInput,
   requestOptions: ProviderRequestOptions,
 ): ReturnType<typeof buildSummarizerPrompt> {
+  // Only `json_schema` carries the schema in the request; `json_object` guarantees JSON, not this JSON.
   return buildSummarizerPrompt(
     input,
-    requestOptions.structured === 'text-json' ? 'text-json' : 'schema',
+    requestOptions.structured === 'json_schema' ? 'schema' : 'text-json',
   );
 }
 

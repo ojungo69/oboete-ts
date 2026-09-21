@@ -45,8 +45,10 @@ export const EGRESS_CLASSES: Record<ProviderPreset['egress'], readonly string[]>
 };
 
 /**
- * The provider presets of contracts/observer.md, with the endpoints and models the R13 probe
- * verified on 2026-09-03 (docs/research/oboete-contracts-probes.md "R13 evaluation").
+ * The provider presets of contracts/observer.md. The R13 probe of 2026-09-03 verified the remote
+ * endpoints and default models (docs/research/oboete-contracts-probes.md "R13 evaluation"); it did
+ * not probe Ollama, and it showed only that the `json_object` flag is accepted, not that a model
+ * then answers the observer schema.
  * `src/observer/providers.ts` reads this record; no other module restates a host or a model id.
  */
 export const PRESET_CATALOG: Record<PresetName, ProviderPreset> = {

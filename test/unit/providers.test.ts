@@ -157,12 +157,14 @@ test('providerRequestOptions follows the preset structured-output policy', () =>
       },
     },
   });
-  for (const preset of ['ollama', 'openrouter'] as const) {
-    assert.deepEqual(providerRequestOptions(preset), {
-      structured: 'response_format',
-      providerOptions: { [preset]: { response_format: { type: 'json_object' } } },
-    });
-  }
+  assert.deepEqual(providerRequestOptions('openrouter'), {
+    structured: 'response_format',
+    providerOptions: { openrouter: { response_format: { type: 'json_object' } } },
+  });
+  assert.deepEqual(providerRequestOptions('ollama'), {
+    structured: 'response_format',
+    providerOptions: { ollama: { response_format: { type: 'json_object' }, reasoningEffort: 'none' } },
+  });
   for (const preset of ['nim', 'gemini', 'agent-cli'] as const) {
     assert.deepEqual(providerRequestOptions(preset), { structured: 'text-json' });
   }

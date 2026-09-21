@@ -174,7 +174,16 @@ export function providerRequestOptions(preset: PresetName): RequestOptions {
   if (structured === 'response_format') {
     return {
       structured,
-      providerOptions: { [preset]: { response_format: { type: 'json_object' } } },
+      providerOptions: {
+        [preset]: {
+          response_format: { type: 'json_object' },
+          // Same reason as `enable_thinking` above: a thinking model on Ollama spent about 1,000
+          // tokens on a one-line prompt and the doctor probe timed out. Ollama's /v1 ignores
+          // `think: false` and honours `reasoning_effort: none`, which the SDK sends for this key; a
+          // non-thinking model accepts it (0.34.2, 2026-09-21).
+          ...(preset === 'ollama' ? { reasoningEffort: 'none' } : {}),
+        },
+      },
     };
   }
   return { structured };
