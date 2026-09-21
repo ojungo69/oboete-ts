@@ -62,10 +62,11 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
 - [ ] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
   `src/db/queries.ts` and `test/unit/retrieval.test.ts`. Status: none reproduce on the `events-1000` corpus
   (the no-model replay stops every fact before ranking; stored verbatim, all 40 fixture facts rank within the
-  first five), pinned in `test/unit/retrieval.test.ts`; the MMR depth observation is #272. The open miss is the
+  first five), pinned in `test/unit/retrieval.test.ts`. Two misses were found after that: the
   small-corpus threshold drop #275, reproduced from the `2026-09-17T15-05-08-894Z` dogfood run (JST
-  2026-09-18) and carried as a skipped
-  five-row artifact in the same file. Acceptance: #275 fixed by retiring the admission threshold
+  2026-09-18) as a five-row artifact in the same file, and the MMR depth drop #272, reproduced as a
+  fixture case in the same file. #275 is fixed and its artifact runs; #272 is the open leg, and its
+  artifact is the one still skipped. Acceptance: #275 fixed by retiring the admission threshold
   (`.specify/bugs/small-corpus-threshold-drop/assessment.md`, 2026-09-20 decision, measured against two
   replacement gates); that artifact un-skipped and passing; the fixture pins still green; plus the pins the
   artifact alone does not give: a small-corpus false-positive case (an unrelated memory in a five-row corpus
@@ -75,6 +76,13 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   and — replacing the retired `threshold = 0.99` mutation, which guarded the mechanism being removed — a
   mutation that reintroduces magnitude-based exclusion, plus a pin that a config carrying the legacy
   `threshold` key retrieves exactly as one without it.
+  2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
+  false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
+  magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,663
+  passing (E18). The MMR leg is not: #272 now has the fixture corpus case it asked for, bracketing
+  the boundary — eleven candidates keep the pair, twelve drop it — with the failing half committed
+  skipped, and `lambda` is unchanged. This task stays open for that leg, the way T042 stays open
+  for its own.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 
 ## Phase 6: US4 — Share at the correct scope (P1)
@@ -488,12 +496,16 @@ writers require separate worktrees. No deployment follows merely from an increme
   `test/unit/retrieval.test.ts` pins the corpus, age-neutral ranking, supersession (hidden by
   default, marked historical in `get --history`) and a shared-title pair, and pins the artifact's
   facts and prompts against the probe library; each of ten mutations fails its test (E12). The MMR rule that
-  drops distinct but similar facts deep in a candidate list is recorded as an observation without a
-  failing corpus case in #272, and lambda is unchanged. The
+  drops distinct but similar facts deep in a candidate list now has the failing corpus case #272
+  asked for (E18): eleven candidates keep the pair, twelve drop it, and the failing half is
+  committed skipped. `lambda` is unchanged, because the fix is to stop rejecting on a
+  depth-dependent bar rather than to tune one. The
   first daily run on the 009 bundle then reproduced a miss the fixture cannot: in a five-memory
   corpus FTS5 clamps the IDF of common trigrams, the ratio-to-best normalization drops every other
   candidate below 0.3, and a fact-bearing memory is omitted from the prompt pack (#275, E12
-  Limits). T023 stays open for that fix.
+  Limits). That leg is closed: #304 retired the admission threshold, and E18 measures the artifact,
+  a five-row false-positive case, the pack path and a replacement mutation. T023 stays open for the
+  MMR leg (#272) alone.
 - T024 (open, 2026-09-18): no local or external profile was qualified in 009, because activating a
   real model is not authorised (handoff of 2026-09-10). The no-model replay gives no generated facts
   to measure, and verbatim facts are all found lexically, so the measurement that would justify

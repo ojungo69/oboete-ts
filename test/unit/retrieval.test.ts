@@ -109,9 +109,11 @@ function insertSearchable(
 function seedPairCorpus(
   db: DatabaseSync,
   extra?: { id: string; title: string; body: string },
+  omit?: string,
 ): void {
   insertRepo(db, 'repo_a', '/tmp/oboete-a');
   for (const memory of PAIR_ROWS) {
+    if (memory.id === omit) continue;
     insertSearchable(db, {
       id: memory.id,
       repoId: 'repo_a',
@@ -904,6 +906,104 @@ test('searchMemories still returns the fact-bearing memory with a non-matching s
     }
   });
 });
+
+// The acceptance case of T023 reads "an unrelated memory in a five-row corpus", so the unrelated
+// row takes a receipt row's place rather than being added beside all five: document count is what
+// FTS5's IDF is computed from, and #275 was a five-row corpus.
+test('searchMemories omits an unrelated memory from a five-row corpus', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      seedPairCorpus(opened.db, {
+        id: 'm_unrelated',
+        title: '配管の設計',
+        body: '来週の会議で配管の設計を見直す。',
+      }, 'm_confirm');
+      const ids = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 })
+        .map((row) => row.id);
+      assert.equal(ids.length, new Set(ids).size, `duplicate rows returned: ${ids.join(', ')}`);
+      assert.ok(ids.includes('m_fact'), `fact-bearing memory absent; returned ${ids.join(', ') || '(none)'}`);
+      assert.ok(!ids.includes('m_unrelated'), `the non-matching row was returned; got ${ids.join(', ')}`);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+// The controls for issue #272: the same pair, above the boundary. Eleven is the deepest list that
+// keeps both facts today, so these run and a change that loses the pair earlier is a regression
+// here rather than a surprise in the red case below.
+// Each filler row is its own sentence. A templated one ("note about subject number N") makes the
+// filler rows near-duplicates of each other at cosine 0.90, and then they compete in the selection
+// order, which moves the boundary around and makes it look as though the rule were not monotonic.
+const MMR_FILLER = [
+  'Deployment keys rotate on the first Monday of each month.',
+  'The viewer binds a loopback port chosen at launch.',
+  'Imported rows wait in quarantine until the worker classifies them.',
+  'A pack line is prefixed with a quotation marker.',
+  'Secretlint runs before the first write, including the spool.',
+  'The daily allowance is counted in Coordinated Universal Time.',
+  'Grok rewrites its configuration file without comments.',
+  'A tombstone keeps the material hash and drops the text.',
+  'Work selection is withheld when two items are active.',
+  'The replay harness reads a frozen fixture bundle.',
+  'Pi acknowledges its capture child before reading standard input.',
+  'A session summary is not bound to any work item.',
+  'The migration matrix covers behind, ahead and missing schemas.',
+  'Sync bundles are encrypted with a key kept in the sync directory.',
+  'Cold start is measured from process start to first write.',
+  'The observer answers no_memory when nothing is worth keeping.',
+  'A fallback target is refused unless the consent record matches.',
+  'Retirement applies to related memories, never to pins.',
+  'The CJK index is a bigram index, not a trigram one.',
+  'Doctor reports an ignored configuration key as a warning.',
+];
+
+function mmr272(depth: number) {
+  assert.ok(depth <= MMR_FILLER.length, `the filler list holds ${MMR_FILLER.length} distinct sentences`);
+  const ahead = Array.from({ length: depth }, (_, index) =>
+    row({
+      id: `ahead-${String(index).padStart(2, '0')}`,
+      title: `note ${index}`,
+      body: MMR_FILLER[index]!,
+      // Lower is better: `ranksFor` sorts BM25 ascending, so these rank above the pair below.
+      scoreTrigram: -100 - index,
+    }));
+  const pair = [
+    row({ id: 'hooks', title: 'busy timeout', body: 'The busy timeout for hooks is 150 ms.', scoreTrigram: -2 }),
+    row({ id: 'cli', title: 'busy timeout', body: 'The busy timeout for the CLI is 2000 ms.', scoreTrigram: -1 }),
+  ];
+  return rankCandidates([...ahead, ...pair], { lambda: 0.5, budgetChars: 1_000_000, limit: 1_000 });
+}
+
+function assertPairKept(result: ReturnType<typeof mmr272>, depth: number): void {
+  assert.deepEqual(
+    result.omitted.filter((item) => item.reason === 'budget'),
+    [],
+    `the budget cut fired at depth ${depth}, so this case no longer isolates the MMR rule`,
+  );
+  for (const id of ['hooks', 'cli']) {
+    assert.ok(
+      result.included.some((item) => item.id === id),
+      `at depth ${depth} the ${id} fact was omitted as ${result.omitted.find((item) => item.id === id)?.reason ?? 'absent'}`,
+    );
+  }
+}
+
+test('two distinct facts in similar words survive a shallow candidate list', () => {
+  for (const depth of [2, 5, 10, 11]) assertPairKept(mmr272(depth), depth);
+});
+
+// Artifact for issue #272, RED until the rule is fixed. Twelve is where the pair starts being
+// dropped: the candidate's relevance, normalized to the best RRF score, falls under its trigram
+// similarity to the row already selected, and `mmrSelect` rejects it outright instead of ranking
+// it lower. Eleven is pinned above, so the two tests bracket the boundary, and everything deeper
+// stays dropped.
+test('a distinct fact behind a deeper candidate list is not dropped as redundant',
+  { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
+    for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
+  });
 
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
   // Distinct bodies, or MMR drops b and c as duplicates of a and the comparison below is between
