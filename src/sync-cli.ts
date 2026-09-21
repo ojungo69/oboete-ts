@@ -9,15 +9,20 @@ import { ResolveError } from './sync/apply.js';
 import { initSpace, joinSpace, leaveSpace, mapRepo, pullSpace, pushSpace, resolveRow, showKey, withSpaceLock } from './sync/space.js';
 import { consentTupleOf, loadSyncConfig, SyncError, syncStatus } from './sync/status.js';
 
-const USAGE = 'Usage: oboete sync init <dir> [--classes eligible,local_only,private] [--json]\n' +
+const USAGE = 'Usage: oboete sync init <dir> [--classes ...] [--json]\n' +
   '       oboete sync join <dir> [--classes ...] [--json]      (the key line is typed on the terminal)\n' +
+  '       init and join both default to --classes eligible,local_only,private\n' +
   '       oboete sync key show\n' +
   '       oboete sync push [--republish] [--json]\n' +
   '       oboete sync pull [--json]\n' +
   '       oboete sync status [--json]\n' +
   '       oboete sync resolve <origin-id> --keep <revision-id|checkpoint-memory-origin> [--json]\n' +
   '       oboete sync map-repo <repo-key> <local-repo-id> [--json]\n' +
-  '       oboete sync leave [--json]\n';
+  '       oboete sync leave [--json]\n' +
+  'The directory must already exist and may not contain, or sit inside, the oboete home.\n' +
+  '`key show` prints the key; `join` reads it without echoing. Both need a terminal.\n' +
+  'One pull reads at most 32 other replicas\' bundles; init syncs eligible, local_only and private\n' +
+  'memories unless --classes narrows that.\n';
 
 type Io = { out(text: string): void; err(text: string): void; isTty(): boolean; readSecret(prompt: string): Promise<string> };
 

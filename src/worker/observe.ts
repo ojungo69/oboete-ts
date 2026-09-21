@@ -63,7 +63,11 @@ const BUSY_RETRY_MS = 200;
 const RESIDENT_POLL_MS = 2_000;
 /** An idle resident still opens an epoch this often so expiry and reclaim keep running. */
 const MAINTENANCE_MS = 60_000;
-const OBSERVE_USAGE = 'Usage: oboete observe [--reprocess-source <source-id>] [--resident] [--stop]\n';
+export const OBSERVE_USAGE = 'Usage: oboete observe                              one bounded run\n'
+  + '       oboete observe --resident                   stay until idle, then exit\n'
+  + '       oboete observe --stop                       end the resident worker\n'
+  + '       oboete observe --reprocess-source <source-id>   one run over that source\n'
+  + '--stop cannot be combined with the others, and reprocessing is always a single run.\n';
 
 export type ObserveDeps = {
   now: () => number;

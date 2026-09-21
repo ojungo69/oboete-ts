@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { PRESET_CATALOG } from '../../src/config.js';
 import { openDatabase } from '../../src/db/open.js';
 import { claimLease } from '../../src/worker/lease.js';
-import { isStorageError, runObserve } from '../../src/worker/observe.js';
+import { isStorageError, OBSERVE_USAGE, runObserve } from '../../src/worker/observe.js';
 import {
   DAY,
   NOW,
@@ -50,7 +50,9 @@ test('explicit reprocessing rejects missing, malformed and unknown options witho
   for (const args of [['--reprocess-source'], ['--reprocess-source', '../private-file'], ['--unexpected']]) {
     let error = '';
     assert.equal(await runObserve(args, { writeError: (text) => { error += text; } }), 2);
-    assert.equal(error, 'Usage: oboete observe [--reprocess-source <source-id>] [--resident] [--stop]\n');
+    // The usage text itself is the product's, not this test's: what is pinned here is that a
+    // refusal prints exactly that text and nothing of what was passed in.
+    assert.equal(error, OBSERVE_USAGE);
   }
 });
 

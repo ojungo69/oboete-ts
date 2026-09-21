@@ -185,6 +185,8 @@ function bundlePath(): string {
 function usage(): string {
   return (
     'Usage: oboete fixture replay <file> [--out <markdown file>] [--json] [--home <dir>] [--keep]\n'
+    + '--out replaces the "## Fixture replay (T068)" section of a Markdown file that already\n'
+    + 'exists and already has that heading; it does not create the file.\n'
   );
 }
 

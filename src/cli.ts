@@ -76,7 +76,13 @@ function usage(): string {
     'Memory reads: search, get, timeline accept --binding <binding-id> and --history.\n' +
     'Reprocess retained source: oboete observe --reprocess-source <source-id>\n' +
     'Resident worker: oboete observe --resident   Stop it: oboete observe --stop\n' +
-    'Use oboete why <session-id> to inspect source IDs and processing outcomes.\n' +
+    'Use oboete why <session-id> [--turn N] [--json] to inspect source IDs and processing outcomes\n' +
+    '  (generation reports at most 100 sources and 100 checkpoint decisions, 50 source ids each;\n' +
+    '   the injection ledger is not capped).\n' +
+    'Reads: search <query> [--limit 1-50] | timeline [--session <id>] | get <memory-id>, all with --json.\n' +
+    'Setup: oboete setup [--agents <list>] [--provider <preset>] [--accept-egress] [--yes] [--remove] [--json]\n' +
+    'Doctor: oboete doctor [--probe-provider] [--no-probe-agents] [--json]\n' +
+    'Viewer: oboete view [--port N] [--open]\n' +
     'Work: oboete work status [--all] [--json]\n' +
     '      oboete work choose <binding-id> <work-id|new>\n' +
     '      oboete work choose-source <source-id> <work-id|new>\n' +
