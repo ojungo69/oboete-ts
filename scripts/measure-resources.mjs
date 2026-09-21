@@ -1011,8 +1011,12 @@ function buildBundles() {
 // The commit is taken before the build, and checked again once the measuring is done: HEAD can move
 // under a run that takes several minutes, and a receipt naming the revision the tree happened to be
 // on at the end would not be a receipt of the bundle that ran.
-function requireSameRevision(commit, { digest, identity }) {
+function requireSameRevision(commit, { digest, identity, fixture, fixtureSha256 }) {
   requireCleanTree();
+  // A generated 10,000- or 100,000-event fixture is untracked, so the clean-tree check does not
+  // cover it: the receipt names the sha256 read at the start, which only holds if nothing rewrote it.
+  const read = createHash('sha256').update(readFileSync(fixture, 'utf8')).digest('hex');
+  if (read !== fixtureSha256) throw new HarnessError(`the fixture changed during the run (sha256 ${fixtureSha256} became ${read}), so the receipt would name a fixture that did not run`);
   const now = gitHead();
   if (now !== commit) throw new HarnessError(`HEAD moved from ${commit} to ${now} during the run, so the bundle measured is not this revision's`);
   // Every hook starts a new process from those two files, so a rebuild part way through would have
@@ -1090,7 +1094,7 @@ async function runLive(cli) {
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
-    requireSameRevision(commit, { digest, identity });
+    requireSameRevision(commit, { digest, identity, fixture: cli.fixture, fixtureSha256 });
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
