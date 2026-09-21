@@ -685,6 +685,17 @@ test('the provider sees aliases, and an aliased answer, a retried one and a copi
   assert.equal(refused.attempts, 2);
 });
 
+test('a deeply nested answer is retried once then unusable on both paths, as before aliases', async () => {
+  const deep = `{"observations":${'['.repeat(5_000)}${']'.repeat(5_000)}}`;
+  const scripted = scriptedFetch(async () => openAiResponse(deep), async () => openAiResponse(deep));
+  const cli = cliSpawn([deep, deep]);
+  for (const ctx of [httpHarness(scripted.fetch).ctx, cliHarness(cli).ctx]) {
+    const result = await summarizeWithProvider(HEX_INPUT, ctx);
+    assert.equal(!result.ok && result.reason, 'unusable_output');
+    assert.equal(result.attempts, 2);
+  }
+});
+
 test('the agent CLI path sends aliases and restores an aliased answer too', async () => {
   const cli = cliSpawn([JSON.stringify(output('e2'))]);
   const result = await summarizeWithProvider(HEX_INPUT, cliHarness(cli).ctx);

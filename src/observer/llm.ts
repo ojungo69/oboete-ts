@@ -185,20 +185,24 @@ export function aliasObserverInput(input: ObserverInput): { sent: ObserverInput;
   };
   const record = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === 'object' && !Array.isArray(value);
-  // Rewrites a key only where the answer has it, so a malformed answer reaches validation as it came.
+  // Copies only the objects on the path to a rewritten key (a deep clone throws on deeply nested
+  // JSON) and rewrites a key only where the answer has it, so a malformed answer reaches validation
+  // as it came.
   const remap = (value: unknown, key: string, map: Map<string, string>, many: boolean) => {
-    if (!record(value) || !(key in value)) return;
+    if (!record(value) || !(key in value)) return value;
     const back = (id: unknown) => (typeof id === 'string' ? map.get(id) ?? id : id);
-    value[key] = many ? (Array.isArray(value[key]) ? value[key].map(back) : value[key]) : back(value[key]);
+    const ids = value[key];
+    return { ...value, [key]: many ? (Array.isArray(ids) ? ids.map(back) : ids) : back(ids) };
   };
   const restore: Restore = (parsed) => {
-    const answer: unknown = structuredClone(parsed);
-    if (!record(answer)) return answer;
-    for (const observation of Array.isArray(answer.observations) ? answer.observations : []) {
-      remap(observation, 'source_event_ids', events.toId, true);
-      if (record(observation)) remap(observation.classification, 'target', nearby.toId, false);
-    }
-    remap(answer.checkpoint, 'source_event_ids', events.toId, true);
+    if (!record(parsed)) return parsed;
+    const answer = { ...parsed };
+    if (Array.isArray(answer.observations)) answer.observations = answer.observations.map((observation: unknown) => {
+      const restored = remap(observation, 'source_event_ids', events.toId, true);
+      return record(restored) && 'classification' in restored
+        ? { ...restored, classification: remap(restored.classification, 'target', nearby.toId, false) } : restored;
+    });
+    if ('checkpoint' in answer) answer.checkpoint = remap(answer.checkpoint, 'source_event_ids', events.toId, true);
     return answer;
   };
   return { sent, restore };

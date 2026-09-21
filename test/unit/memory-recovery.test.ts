@@ -476,11 +476,13 @@ test('a large source and more than fifty sources complete through lossless pages
     }))));
     assert.equal(JSON.parse(fragments.map((fragment) => fragment.text).join('')).text, large);
     assert.equal(sent[1].fragment, undefined, 'other sources get a turn before the large source continues');
-    // Each page's alias came back as the one original id: every sent range is recorded against it.
+    // Each page's alias came back as the one original id: a stored memory cites every sent range of it.
     fixture.withDb((db) => {
-      const recorded = db.prepare(`SELECT 1 FROM observation_batch_sources
-        WHERE raw_event_id = ? AND portion_start = ? AND portion_end = ?`);
-      for (const fragment of fragments) assert.ok(recorded.get(sourceId, fragment.start, fragment.end), `${fragment.start}-${fragment.end}`);
+      const cited = db.prepare(`SELECT 1 FROM memory_sources WHERE raw_event_id = ? AND portion_start = ?
+        AND portion_end = ? AND source_hash = ? AND evidence IS NOT NULL`);
+      for (const fragment of fragments) {
+        assert.ok(cited.get(sourceId, fragment.start, fragment.end, fragment.source_hash), `${fragment.start}-${fragment.end}`);
+      }
     });
     fixture.withDb((db) => {
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE kind = 'prompt' AND processing_state <> 'processed'").get()?.n, 0);

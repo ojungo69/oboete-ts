@@ -77,6 +77,9 @@ for (const outputKind of ['update', 'add', 'checkpoint'] as const) for (const re
         const memory = getMemory(db, id, memoryScope(db, { repoId: String(current.repo_id), workId: String(current.work_id), destination: 'injection' }));
         assert.ok(memory);
         assert.ok(memory.body?.includes(detail));
+        // The aliased target came back as the stored parent: the update closed it, not a new add.
+        if (outputKind === 'update') assert.deepEqual({ ...db.prepare('SELECT superseded_by, valid_to IS NOT NULL AS closed FROM memories WHERE id = ?').get(parentId) },
+          { superseded_by: id, closed: 1 });
         const location = { repoId: String(current.repo_id), bindingId: String(current.id), home: fixture.paths.home };
         assert.equal((await filterReadOutput(db, location, [memory], [])).memories.length, 1);
         if (revoke === 'path rule') writeFileSync(join(fixture.home, '.oboete.toml'), '[privacy]\nsecret_paths = ["protected/**"]\n');
