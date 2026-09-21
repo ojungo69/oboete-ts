@@ -3003,4 +3003,51 @@ the #275 artifact was. The filler rows are twenty distinct sentences rather than
 templated filler makes those rows near-duplicates of each other at cosine 0.90, they then compete
 in the selection order, and the boundary moves with them. The assessment of the fix — including the cosine measurements that ruled out a
 similarity cutoff — is a comment on #272, since `.specify/` is outside this repository by policy.
-T023 stays open for that leg, so this section closes one leg of the task and not the task.
+T023 stayed open for that leg, so this section closed one leg of the task and not the task; E19
+closes the other.
+
+## E19 — the MMR leg of T023 is closed (#272)
+
+`mmrSelect` rejected a candidate as `mmr_redundant` when `(1 - lambda) * similarity >= lambda *
+relevance`, with relevance normalized to the best RRF score. With `k = 60` that relevance falls with
+depth, so the bar was a function of how many rows ranked above a candidate rather than of how
+duplicate it was. A near-duplicate cosine cutoff was measured and ruled out before the fix: on the
+character-trigram cosine a changed fact scores as high as a duplicate (one changed word, an
+inserted "not", two swapped values: 0.99 to 1.0), which is the argument that retired the BM25
+admission threshold for #275. The fix, at `a9a2e7e4`, keeps the MMR score as the order and rejects
+only identical content as the store defines it: `materialHash`, title and body each normalized
+(A13, FR-035). The `limit` branch that also reports `mmr_redundant` is unchanged and is #324.
+Everything below was run at that revision; each receipt is named by its test in
+`test/unit/retrieval.test.ts`.
+
+- **The artifact runs.** `a distinct fact behind a deeper candidate list is not dropped as
+  redundant` is no longer skipped and passes at twelve, fifteen and twenty candidates ranked above
+  the pair, with nothing omitted as `budget`. Its control, `two distinct facts in similar words
+  survive a shallow candidate list` (two, five, ten and eleven above), is unchanged and passes.
+- **Duplicates are still rejected.** `mmrSelect rejects an identical duplicate with reason
+  mmr_redundant` (renamed from "a near-duplicate": its rows were always identical) and
+  `rankCandidates returns rrf and mmr scores on included rows` pass unchanged. `mmrSelect rejects an
+  A13 identity duplicate with reason mmr_redundant` is new: rows that differ only in letter case,
+  full-width letters and whitespace runs are one row.
+- **A changed fact is not a duplicate.** `mmrSelect keeps a changed fact whose trigram cosine is
+  above 0.99` asserts the cosine in the test and keeps both rows, so the rule is not a cutoff.
+  `mmrSelect keeps rows that match only across the title/body boundary` keeps `alpha beta` /
+  `gamma` beside `alpha` / `beta gamma`, whose packed strings are equal.
+- **Mutations.** Each was applied to `src/retrieval/rank.ts`, rebuilt, and run against the
+  retrieval, pack and inject suites, then reverted (`cmp` against the saved file). Restoring the
+  old depth-dependent predicate fails four tests: the artifact, the A13 identity case, the cosine
+  case and the boundary case. Comparing the packed string instead of title and body fails one: the
+  boundary case. Removing the identity rejection fails three: both duplicate cases and
+  `rankCandidates returns rrf and mmr scores on included rows`.
+- **Ordinary retrieval did not move.** A row that used to be rejected is now selected and raises
+  the similarity of the rows still waiting, so later picks could in principle reorder. The fixture
+  pins did not: `MEASURED_FIRST_RANK_COUNT = 39` and the top-five pins pass unedited.
+- **Nothing else regressed.** `npm test` at this revision: 1,667 passing, 0 failing and 2 skipped
+  (the `OBOETE_SYNC_HEAVY` bounds cases) in the parallel leg, 280 passing and 0 failing in the
+  serial leg, exit 0; `npm run lint` and `npm run typecheck` exit 0.
+
+The pack path needs no receipt of its own for this leg. `buildPromptPack` filters delivered and
+retired rows and then passes the rest to `rankCandidates` with no `limit`, so the MMR rule it sees is
+the one the tests above exercise, and the budget cut after it is unchanged. #272 was reproduced as
+a fixture case and has no dogfood receipt, unlike #275: the corpus case is the evidence that the
+rule dropped distinct facts, and E12's forty fixture facts still rank where they did.

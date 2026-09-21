@@ -1013,9 +1013,10 @@ test('searchMemories omits an unrelated memory from a five-row corpus', async ()
   });
 });
 
-// The controls for issue #272: the same pair, above the boundary. Eleven is the deepest list that
-// keeps both facts today, so these run and a change that loses the pair earlier is a regression
-// here rather than a surprise in the red case below.
+// Issue #272: two distinct facts in similar words, behind a growing number of other candidates.
+// The old rule rejected on a bar that fell with depth: eleven candidates above kept the pair,
+// twelve dropped the second fact. The shallow depths below always kept it; the deeper ones in the
+// next test are the ones the fix changed.
 // Each filler row is its own sentence. A templated one ("note about subject number N") makes the
 // filler rows near-duplicates of each other at cosine 0.90, and then they compete in the selection
 // order, which moves the boundary around and makes it look as though the rule were not monotonic.
@@ -1077,10 +1078,9 @@ test('two distinct facts in similar words survive a shallow candidate list', () 
   for (const depth of [2, 5, 10, 11]) assertPairKept(mmr272(depth), depth);
 });
 
-// Issue #272: a distinct fact behind a deeper candidate list is kept. Identity-only rejection
-// no longer drops it when RRF-normalized relevance falls under trigram similarity to a selected
-// row. Eleven is pinned above, so the two tests still bracket the former boundary; twelve,
-// fifteen and twenty must keep both facts.
+// Twelve is where the old rule started dropping the second fact: its relevance, normalized to the
+// best RRF score, fell under its trigram similarity to the first. Only identical content is
+// rejected now, so both facts stay at every depth.
 test('a distinct fact behind a deeper candidate list is not dropped as redundant', () => {
   for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
 });

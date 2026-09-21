@@ -153,7 +153,7 @@ Codex を起動する shell からは API key 類を `env -u` で外す。
    確認 → `pr-merge-gatekeeper` → merge。
 4. **US7 + amendment**: T037–T039、T047 (session スコープ常駐、hook 起動、lease 所有、idle exit)、
    T048 (detected local + consented free presets、有料は自動選択しない)。
-5. **実測と最終 gate**: T020 (2026-09-17 に合成テストで close、native は #265)、T023 (#275 は #304 で close、receipt は E18。MMR の深さ依存 #272 だけが open)、T024 (#266)、
+5. **実測と最終 gate**: T020 (2026-09-17 に合成テストで close、native は #265)、T023 (2026-09-21 close。#275 は #304、receipt は E18。MMR の深さ依存 #272 は同一内容だけを落とす形に直し、receipt は E19)、T024 (#266)、
    T041–T045。実 agent pair・実モデル・100k events・7 日運用は merge 後の follow-up issue + dogfood cron で追う (owner 判断)。
    T042 は 1,000 events の retained-history sweep のみ close 相当 (`scripts/measure-resources.mjs`、
    receipt は `docs/evidence/memory-core-2026-09/resource-sweep.md`。観測された peak VmHWM 107.43 / 100.75 MiB (run の全プロセス。resident の最終サンプル区間だけはどの計器も覆えず #307)、
