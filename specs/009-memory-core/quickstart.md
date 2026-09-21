@@ -2766,3 +2766,108 @@ provider runs at all, so SC-009 recall is 0/40 by construction and is reported, 
 model consumption needs a model this task is not authorised to activate. T042 therefore stays open
 with its three named legs outstanding, which is why its line in `tasks.md` carries the status rather
 than an `[X]`.
+
+## E15 — cohesive verification of the assembled feature (T043)
+
+Run on 2026-09-21. The gates were run twice: first against `e19acd8e`, the merge of #306, and
+again against `9397a85a`, the merge of #310, which is the revision this checkpoint covers. The
+figures below are the second run, with the documentation commits of this branch on top of it.
+
+### Gates
+
+`npm run typecheck`, `npm run lint`, `npm run build`, `npm test` and `npm run pack-check` each exit 0
+on Node 24.16.0 and on 22.23.1. The suite is 1,663 tests with 1,661 passing, 0 failing and 2 skipped
+(the two 256 MiB sync cases, which need `OBOETE_SYNC_HEAVY=1`), followed by the 280-test bundle,
+which passes in full. The figures are identical on both versions.
+
+22.23.1 is not the floor the package advertises. `engines.node` is `>=22.16`, and 22.16.0 is not
+installed on this host, so the floor is covered by continuous integration rather than here: the
+`engine (22.16.0)` job is green on this branch's head and on `9397a85a`. Read the local legs as
+24.16.0 and a later 22.x, with the floor itself attested by CI on the same revisions.
+
+`semgrep scan --config p/javascript --config p/typescript --config p/secrets --config p/nodejs` over
+`src` and `scripts` reports no findings. It is a partial result: 458 rules could not run, each
+reporting that its operator is supported only in the Pro engine, so this says the open rules found
+nothing, not that the file set is clean.
+
+### Security review
+
+The B4 review's packaged report was never produced — its draft lived in a `security-b4/` run
+directory that no longer exists, and the plugin's data directory is empty. This checkpoint replaces
+it with a scoped review rather than claiming the old one, and it is a review of the source, not an
+execution: nothing was run, and no finding below was reproduced.
+
+The scope was capture and redaction (`src/capture.ts`), secret propagation
+(`src/worker/batches.ts`), what reaches a provider (`src/observer/`), grants and imported records
+(`src/sharing.ts`, `src/transfer*.ts`), what leaves the machine (`src/sync/`), what reaches an
+agent's context (`src/injection/`), and the two command surfaces (`src/cli.ts`, `src/mcp.ts`). Each
+function's assumptions, guarantees and dependencies were written down first, so that a caller's
+guarantee would not be mistaken for a missing check.
+
+One defect was confirmed and fixed in #310: staging read a memory payload's `deleted_at` as proof
+that the line carried no text and skipped the material-hash comparison, while apply takes deletion
+from the line's control, so a hand-written line that set one without the other blanked a live row
+with no tombstone, no conflict and nothing in `sync status`. `controlOf` derives one from the other,
+so no honest sender produces that pair. Absence of text is now decided by the control alone and the
+divergent pair is rejected as `deleted_without_tombstone`.
+
+Three findings are open as issues: provider-chosen citation paths are `existsSync`'d without a
+containment check or a budget (#311), a pulled work context can lower `repo_secret_paths_json` that
+the local writer protects with a monotonicity guard (#312), and the delivery-time privacy re-check
+is only partly pinned (#313). The last one was narrowed after review: `test/unit/work-readers.test.ts`
+does cover the refusal side, at line 219 for changed repository rules and credentials and at line 96
+for a source that became ineligible, all through `attachOnPreToolUse` returning null. What has no
+test is the guard reached through an explicitly set `privacyGuard`, and the delivering direction.
+No P0 or P1 was found.
+
+What the review did not cover, so the limits are on the record: `src/viewer/server.ts` beyond its
+browser spawn, the `src/setup/` parsers, `src/retrieval/rank.ts`, the migration DDL triggers, and
+whether `reclassifyImported`'s 100-row budget keeps up with quarantine.
+
+### Cross-slice review
+
+The slices of 009 were each reviewed line by line when they landed, and re-reviewing the whole
+`590c0a2f..e19acd8e` range (177 files, ~29,800 added lines) does not converge. This pass reviewed
+the seams instead: the schema against its readers, the `classification_state` and `processing_state`
+contract from capture through the worker to injection, what privacy and sharing allow out of the
+store, the worker lifecycle, and the CLI and MCP surfaces against `contracts/`.
+
+The pass itself read `590c0a2f..e19acd8e`; the one commit after it, the #310 fix, is covered by
+this checkpoint's own security review, which found it, and by that pull request's review.
+
+Four defects came out of it, each verified against the source here and filed rather than fixed,
+because each is a decision about which side of a seam should change: quarantine release converges
+onto an existing memory without the sensitivity merge the importer performs (#314); generation can
+write reciprocal dependency edges that the export's acyclicity check then refuses, so a store can
+become unexportable (#315); `oboete why` builds its scope without a work, so a work-bound trace comes
+back empty instead of out of scope (#316); and the Pi tool wrappers forward no work binding, so a
+checkpoint delivered by injection cannot be fetched back (#317).
+
+### Over-engineering pass
+
+`ponytail-review` was run twice: over each change this checkpoint produced, before it was
+committed, and once over the whole 009 surface (`590c0a2f..9397a85a`) with the same lens — what
+could be deleted or collapsed without losing behaviour. The cohesive pass found five items, about
+110 lines, all of them dead or single-use code the 009 migrations left behind: a privacy helper
+and a pair of session getters that only their own tests still reach, an unreachable `'summary'`
+label variant in the injection pack, three unreferenced sync declarations, and a wrapper that
+copies a structure for one call. They are advisory, none is a defect, and they are filed as #321
+rather than applied here, so that this checkpoint stays a record of verification rather than a
+refactor.
+
+Separately, fifteen `ponytail:` comments in `src/` name a ceiling and the condition that would
+raise it — a quadratic prefix parse in `setup/managed-block.ts`, per-row scans in
+`sync/capture.ts` and `sync/apply.ts`, the 50-row and 2 MiB provenance bound in
+`transfer-claude-mem.ts`, the 50-row listing cap in `db/queries.ts`, and the rest. They are
+accepted debt with a named trigger, not open defects.
+
+### What this checkpoint does not close
+
+T043 covers the assembled feature as it stands at `9397a85a`, the merge of #310. What it records
+is a verification, and the shape of each pass is stated where it is reported: the correctness
+review is a seams review rather than a re-reading of 29,800 lines that no reviewer converges on,
+the security review names its scope and its exclusions, and the over-engineering pass is recorded
+above with its findings filed. Nothing here is a claim that a whole-range line review was run. It does not close T024 or
+T041, whose legs are deferred by owner decision, and it does not revisit T042's outstanding legs
+(#267, #268). The seven issues above are the work it found; none of them blocks the milestone, and
+each is recorded where the code is rather than only here.

@@ -142,7 +142,14 @@ Owner amendment, 2026-09-10:
   no spool file at any sample, and every hook exiting 0. The 10,000- and 100,000-event legs are #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
   so the sweep runs with `[observer] preset = "none"` and reports SC-009 recall 0/40 rather than gating it.
-- [ ] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.
+- [X] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.
+  Status: run on 2026-09-21 against `9397a85a`, the merge of #310; see `quickstart.md` E15, which
+  also records the first run against `e19acd8e`. Typecheck, lint, build,
+  the 1,663-test suite and pack-check all pass on Node 24.16.0 and 22.23.1, and semgrep reports
+  nothing over `src` and `scripts` with 458 rules unavailable outside its Pro engine. The scoped
+  security review replaces the B4 report, whose draft no longer exists; it found one defect, fixed
+  in #310, and left #311, #312 and #313 open. The cross-slice review filed #314, #315, #316 and
+  #317, and the over-engineering pass over the whole feature filed #321. #310 is merged.
 - [ ] T044 Update `README.md` and user-facing help with only verified capabilities and remaining limitations.
 - [ ] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
 
