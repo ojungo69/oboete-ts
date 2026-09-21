@@ -2725,3 +2725,44 @@ exercises 009 (#244 was schema 3).
   that memory below threshold. The M1 start pack carried the free summary instead. Separately,
   the dogfood home's `consent_changed` outcomes are held doctor-probe sources whose temporary
   root is gone. The cause, the fixes and the gate's 009 form are tracked in #274.
+
+  The "below threshold" half is closed: those five rows are the receipt #275 was filed from, and
+  #304 retired the admission threshold rather than repairing it (E12's limits carry the
+  measurement). The prompt half — the observer answering `no_memory` for a prompt that declares
+  three exact facts, and a verbatim quote failing the language gate — is #278. What remains of #274
+  is the run itself: the next daily run is what says whether the pairs recover.
+
+## E14 — retained-history resource sweep (T042, SC-008)
+
+What a worker costs while a reader holds the database open and capture keeps arriving, measured by
+`scripts/measure-resources.mjs` against the product's own binaries in a temporary home, reading only
+what the product writes or what the run itself started (`logs/observe.log` and the `run start pid=`
+it records, `/proc/<pid>/stat` and `/proc/<pid>/status` of those pids, each child's peak resident
+size from `/usr/bin/time -f %M`, the database and its WAL). The receipts are
+`docs/evidence/memory-core-2026-09/resource-sweep.md`; the run is 2026-09-21 against `8f4715a8` on
+both supported Node versions.
+
+Two phases: a replay of `test/fixtures/events-1000.jsonl` (1,051 lines) through the real hooks and
+38 one-shot worker runs, then, against the resident worker, a hold of a read-only connection of at
+least 20 seconds (24.9 s measured, the rest being the session-end hooks and the wait for a batch to
+overlap the hold) while 20 sessions of 9 prompts each keep capturing, sampling every ~250 ms and
+again after the drain and stop.
+
+Four checks are gated and pass on Node 24.16.0 and 22.23.1: all 1,322 rows phase A leaves are still
+there afterwards, with no missing, duplicate or failed-classification source and each session's
+`session_start`, `session_end`, `last_assistant_message` and `turn_end` stored exactly once;
+`pending = 0`, `liveBatches = 0`, `endReason = stopped` with no `worker-stop` sentinel left; the WAL recycling to 0 after the product's
+own stop path runs `wal_checkpoint(TRUNCATE)`; and the observed peak `VmHWM` under 150 MiB
+(107.43 MiB and 100.75 MiB) across every process of the run — the worker from the samples, and all
+245 children from the kernel's figure at exit, which is what carries phase A's own 1,143 hooks into
+the bound. One interval is not observed: growth in the last sample interval of the resident's life,
+since `/proc` goes with the process and the worker does not record its own peak (#307).
+Injection p99 (296.4 ms) and two session-start packs without `summary_pending` are reported rather
+than gated — they belong to the timing work.
+
+What the sweep cannot say, stated where the numbers are: 1,051 events is not scale (#267), a
+half-minute hold shows nothing about long-run growth (#268), and `[observer] preset = "none"` means no
+provider runs at all, so SC-009 recall is 0/40 by construction and is reported, not gated. Local
+model consumption needs a model this task is not authorised to activate. T042 therefore stays open
+with its three named legs outstanding, which is why its line in `tasks.md` carries the status rather
+than an `[X]`.
