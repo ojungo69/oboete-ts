@@ -2871,3 +2871,83 @@ above with its findings filed. Nothing here is a claim that a whole-range line r
 T041, whose legs are deferred by owner decision, and it does not revisit T042's outstanding legs
 (#267, #268). The seven issues above are the work it found; none of them blocks the milestone, and
 each is recorded where the code is rather than only here.
+
+## E16 — README and help say only what the source supports (T044)
+
+The user-facing text was rewritten and then treated as a claim set to be falsified. Merged as #320
+at `32edb651`, sixteen commits over `9397a85a`.
+
+- **Scope.** `README.md` (status, shape, requirements, install, setup, doctor, the command list,
+  privacy model, degraded modes and a new `## Current limitations`), the help of `src/cli.ts`,
+  `src/sync-cli.ts`, `src/worker/observe.ts` and `src/fixture/replay.ts`, and one test that pins a
+  refusal to print exactly `OBSERVE_USAGE` and nothing of what was passed in.
+- **Method.** Five Codex rounds over the whole range to `ok: true`, an independent Codex session on
+  the final state which found two more, a scoped round over the delta the earlier gates had not
+  seen, a `ponytail-review` pass, and six rounds of the pull request's own bot. Each finding was
+  read against the source before it was adopted: the constant, the SQL `LIMIT`, the schema bound or
+  the branch that decides the behaviour.
+- **What the passes changed.** The corrections are of one kind — a sentence that was true of an
+  intention rather than of the code. Among them: a format 2 restore needs a database that already
+  exists at the current schema, and a bare `oboete setup` on the default remote preset stops at the
+  consent screen without creating one; an import that resolves no privacy context leaves its rows
+  quarantined with no way back, since a re-import with a different mapping is refused; the ordinary
+  capture path stores no truncation marker; a tool call loses input text and paths well under the
+  stdin bound; a push refuses an oversized snapshot rather than splitting it, and reaches its
+  per-record bound before any snapshot bound; `share adopt` needs `--binding` in the very case the
+  paragraph describes; `eligible` is subject to a sync space's class list like the other classes; a
+  sync bundle carries a secret row's identity hash and floor with the text withheld; and `oboete
+  mcp` is a JSON-RPC server, so what the product has is no service, not no remote procedure call.
+- **The limitation that changed shape.** The draft said recall against a real summarizer was not
+  measured and that ordered multi-agent continuation was synthetic. Both were wrong: the daily run
+  does launch two native agents in sequence with a real provider, and what it does not assert is
+  the work-item and checkpoint hand-off (#265). The three real-provider receipts are named with
+  their revisions — M1 12 of 12 on 2026-09-16, the 009 bundle `6b683213` 1 of 12 the next day
+  (#274), and the Workers AI replay at `d724d5df` recalling 8 of 40 — and the bullet now says what
+  is true at this revision: nothing re-measures it here.
+- **Gates.** All six required checks green on `32edb651`; SonarCloud 0 new issues; 20 review
+  threads resolved; the bot's code and security reviews on the head found nothing. One `check`
+  failure on `bc6ed988` was `test/unit/memory-scope.test.ts:395`, where a detector run past its
+  cutoff makes `adoptKnowledge` answer `false`; it passed on re-run and is recorded in #319 with
+  the other load-sensitive deadlines.
+
+This section claims accuracy of the text against the source at `32edb651`, nothing about whether
+the product is qualified. What the README now says about that is in its own limitations section.
+
+## E17 — fresh-context verification of the completed markers (T045)
+
+Every `[X]` in `tasks.md` was re-checked against the source and the receipts it names, by seven
+readers that had not done the work, and a reviewer that re-read every verdict which was not clean
+and spot-checked three that were. Of 43 markers, 36 were earned as written, five claimed more than
+their receipts carry, and two were not earned.
+
+**The one defect that mattered.** T002 and T046 both promise to synchronize the local Spec Kit
+constitution, and that file had never been updated: `.specify/memory/constitution.md` was still
+3.2.0 of 2026-09-04, with `### II. One File, No Daemon` and "There MUST be no resident daemon, RPC
+server" — the clause the 5.0.0 amendment reversed to permit the leased resident worker this feature
+ships. `CONSTITUTION.md` asserted the copy was synchronized in both of its sync-impact reports. The
+file is outside git (`.git/info/exclude`), so nothing would have caught it. Ten `speckit-*` skills
+read that path, so the next Constitution Check would have held T047's resident worker against a
+rule forbidding it. It now carries `CONSTITUTION.md` verbatim at 5.0.0.
+
+That copy stays untracked on purpose, which means the repair is per checkout rather than per clone:
+`CONSTITUTION.md` is the canonical text, and `cp CONSTITUTION.md .specify/memory/constitution.md`
+is what synchronizes a working copy — that is the command run here. Any checkout whose Spec Kit
+constitution disagrees with `CONSTITUTION.md` is stale and should run it.
+
+**Five lines corrected rather than re-worked**, because in each case the work was done and the line
+described it wrongly:
+
+- T003 and T004 name a review whose findings were never written down. Both lines now say what the
+  marker actually rests on — the increment split and the end state — instead of implying a log.
+- T030 named `test/unit/transfer.test.ts` for scope and provenance; that file covers the old reader
+  and passes `--format 1` explicitly, while the format 2 assertions are in
+  `test/unit/migration-import.test.ts`. The line now names both.
+- T037 named `providers.test.ts` and `setup.test.ts` for limit exhaustion, which neither contains;
+  it is in `test/unit/provider-fallback.test.ts`, as this file's own contract note already said.
+- T047 claimed long-run resources. The 1,000-event leg is measured in E14; the 10,000- and
+  100,000-event legs and the seven-day soak are T042's and still open (#267, #268). The line now
+  says so.
+
+Two verifier verdicts were overturned on re-reading: T034 reads "using `src/transfer.ts`", and the
+record iterators it means were extracted to `src/transfer-records.ts` and are imported by
+`src/sync/capture.ts` and `src/sync/apply.ts`; T040's gap was an artifact its line never asked for.
