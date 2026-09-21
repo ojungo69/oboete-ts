@@ -268,9 +268,10 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   not found.
 - `oboete why <session-id> [--turn N] [--json]` — injection ledger (included, omitted, trims,
   staleness, deferred deliveries, degraded sentence plus reason code); exit 1 if the session is not
-  in this repository. Two of its sections are bounded: generation reports at most 100 sources, and
-  the checkpoint section at most 100 decisions with at most 50 source identifiers each and at most
-  20 historical actions per source. The injection ledger is not capped — every injection of the
+  in this repository. Two of its sections are bounded: generation reports at most 100 sources, each
+  with at most 20 linked memory identifiers and 20 deliveries, and the checkpoint section at most
+  100 decisions with at most 50 source identifiers each and at most 20 historical actions per
+  source. The injection ledger is not capped — every injection of the
   session is listed with its items.
 - `oboete pause` / `oboete resume` — create or remove `~/.oboete/paused` without opening the
   database. Pause prints: "Capture and injection are paused. Run `oboete resume` to continue;
@@ -439,7 +440,7 @@ admitted target has failed.
 
 | Reason | Sentence in a pack | What doctor says |
 | --- | --- | --- |
-| `summary_pending` | Some information for the selected work is still waiting to be processed. Its checkpoint and recent activity may be incomplete. | Not a doctor item; the pack is built immediately and carries labelled recent activity — at most six entries, each excerpted to 200 characters — rather than waiting for generation. |
+| `summary_pending` | Some information for the selected work is still waiting to be processed. Its checkpoint and recent activity may be incomplete. | Not a doctor item; the pack is built immediately and carries labelled recent activity — at most six entries, each excerpted to 200 characters of its own text, which a tool call carries after the tool name — rather than waiting for generation. |
 | `index_unavailable` | The memory index could not be read this time, so some notes are missing. | `fts` degraded: "Search and injection return nothing until full-text search is back (packs say `index_unavailable`)." |
 | `empty` | There is nothing recorded for this repository yet. | Not a doctor item. |
 | `window_unknown` | The context window of this model is not documented yet, so a deliberately small amount of text was selected. | Not a doctor item; Grok Build reports no model, so the smallest verified window is used. |
