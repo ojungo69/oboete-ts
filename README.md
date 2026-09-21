@@ -359,9 +359,9 @@ counter is incremented instead. In the partial case the metadata is not withheld
 is — the paths a readable prefix named can still reach a rule-based change record or a session
 summary — so read the guarantee as one about the text. An event well under that bound can lose
 content too: the rendered input of a tool call is kept to 20,000 characters and its path list to 50
-entries before the row is written. A shell command is not rendered that way and is kept whole to
-the 1 MB text cap, and a path past the fiftieth can still appear in text the call carried, such as
-a patch.
+entries before the row is written. A shell command is not rendered that way and is not held to that
+cap; the 256 KiB read above is what bounds it. A path past the fiftieth can still appear in text
+the call carried, such as a patch.
 Repository rules in `.oboete.toml` are bounded too: at most 64 entries of at most 256 characters
 each.
 
@@ -582,13 +582,12 @@ Implemented and verified here is not the same as qualified. At this version:
   native agents in sequence, but it asserts only that the seeded facts reach the receiving agent.
   That the receiving agent is given the selected work item and its checkpoint, and no unrelated
   one, is exercised by generated pairs (#265).
-- **Recall against a real summarizer is below target wherever it has been measured, and no
-  measurement is current.** The fixture evaluation in this repository runs with no provider, so its
-  0 of 40 is what the rules alone produce. Two receipts used a real one, both from earlier
-  revisions: a Workers AI replay at `d724d5df` recalled 8 of 40 planted facts against a 90% target,
-  and the daily native run on the 009 bundle (`6b683213`, 2026-09-17) passed 1 of 12 agent pairs
-  against 12 of 12 on the bundle before it (#274). Retrieval has been repaired since both; nothing
-  re-measures it at this revision.
+- **Recall against a real summarizer is unverified at this revision.** The fixture evaluation in
+  this repository runs with no provider, so its 0 of 40 is what the rules alone produce. Three
+  receipts used a real one, all from earlier revisions: the M1 bundle passed 12 of 12 agent pairs
+  on 2026-09-16; the 009 bundle (`6b683213`) passed 1 of 12 the next day with the same preset and
+  model (#274); and a Workers AI replay at `d724d5df` recalled 8 of 40 planted facts against a 90%
+  target. Retrieval has been repaired since the two failures; nothing re-measures it here.
 - **Scale and long-run behaviour are open.** The resource sweep replays about a thousand events in
   roughly four minutes and then holds a reader open for 24.9 seconds against the resident worker;
   ten thousand and a hundred thousand events are #267, and seven days of real use is #268. Nothing
