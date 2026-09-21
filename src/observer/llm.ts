@@ -161,9 +161,58 @@ function neuronsFrom(
   );
 }
 
+type Restore = (parsed: unknown) => unknown;
+
+/**
+ * #329: the request names its events `e1..eN` and its nearby records `m1..mN` instead of their
+ * 64-hex ids, which small models mis-copy (one wrong id fails the whole batch). The tables belong
+ * to this one request. `restore` maps the answer's sources and nearby target back before the
+ * unchanged validation; anything else, including an unknown alias or an `m` alias cited as a
+ * source, is left for that validation to reject, and it never throws on a malformed answer.
+ */
+export function aliasObserverInput(input: ObserverInput): { sent: ObserverInput; restore: Restore } {
+  const table = (ids: string[], prefix: string) => {
+    const toAlias = new Map<string, string>();
+    for (const id of ids) if (!toAlias.has(id)) toAlias.set(id, `${prefix}${toAlias.size + 1}`);
+    return { toAlias, toId: new Map([...toAlias].map(([id, alias]) => [alias, id])) };
+  };
+  const events = table(input.events.map((event) => event.id), 'e');
+  const nearby = table(input.nearby.map((row) => row.id), 'm');
+  const sent = {
+    ...input,
+    events: input.events.map((event) => ({ ...event, id: events.toAlias.get(event.id)! })),
+    nearby: input.nearby.map((row) => ({ ...row, id: nearby.toAlias.get(row.id)! })),
+  };
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  // Copies only the objects on the path to a rewritten key (a deep clone throws on deeply nested
+  // JSON) and rewrites a key only where the answer has it, so a malformed answer reaches validation
+  // as it came.
+  const remap = (value: unknown, key: string, map: Map<string, string>, many: boolean) => {
+    if (!record(value) || !(key in value)) return value;
+    const back = (id: unknown) => (typeof id === 'string' ? map.get(id) ?? id : id);
+    const ids = value[key];
+    if (!many) return { ...value, [key]: back(ids) };
+    return { ...value, [key]: Array.isArray(ids) ? ids.map(back) : ids };
+  };
+  const restore: Restore = (parsed) => {
+    if (!record(parsed)) return parsed;
+    const answer = { ...parsed };
+    if (Array.isArray(answer.observations)) answer.observations = answer.observations.map((observation: unknown) => {
+      const restored = remap(observation, 'source_event_ids', events.toId, true);
+      return record(restored) && 'classification' in restored
+        ? { ...restored, classification: remap(restored.classification, 'target', nearby.toId, false) } : restored;
+    });
+    if ('checkpoint' in answer) answer.checkpoint = remap(answer.checkpoint, 'source_event_ids', events.toId, true);
+    return answer;
+  };
+  return { sent, restore };
+}
+
 function parseOutput(
   text: string,
   input: ObserverInput,
+  restore: Restore,
 ): { ok: true; output: ObserverOutput } | { ok: false; detail: string } {
   let parsed: unknown;
   try {
@@ -171,7 +220,7 @@ function parseOutput(
   } catch {
     return { ok: false, detail: 'provider response was not valid JSON' };
   }
-  const validated = validateObserverOutput(parsed, input);
+  const validated = validateObserverOutput(restore(parsed), input);
   return validated.ok
     ? { ok: true, output: validated.output }
     : { ok: false, detail: validated.detail };
@@ -194,7 +243,7 @@ export function buildSummarizerPrompt(
     'Also return a checkpoint decision: replace with a complete snapshot of the work purpose, constraints, decisions and outstanding steps, or explicitly leave it unchanged. Cite supplied event IDs and explain the choice.',
     'Preserve all still-applicable constraints and outstanding steps from the provided checkpoint. Related investigation and Git integration do not complete the work. Never invent completion.',
     'If checkpoint_context is withheld, use unchanged. A replacement must fit the checkpoint limits without truncation. Checkpoint citations do not account for ordinary observations or exact facts.',
-    'A fragment is an exact contiguous part of a serialized event, with the original event ID. Account only for the supplied range; later ranges arrive in subsequent requests. Never invent missing context.',
+    'A fragment is an exact contiguous part of a serialized event, with its event\'s ID. Account only for the supplied range; later ranges arrive in subsequent requests. Never invent missing context.',
     'Use source capture times when classifying changes. An old event cannot establish that a newer nearby fact was replaced or deleted.',
     'Classify each observation as add, update, delete, or noop against the supplied nearby records.',
     'Keep identifiers, tokens, codes, file names, error text and any string the developer marks as exact verbatim in titles and bodies; never translate or paraphrase them.',
@@ -236,6 +285,7 @@ function failure(
 function agentCliResultOutcome(
   result: Awaited<ReturnType<typeof runAgentCli>>,
   input: ObserverInput,
+  restore: Restore,
   attempts: number,
 ): CallOutcome | null {
   if ('error' in result) {
@@ -254,7 +304,7 @@ function agentCliResultOutcome(
   if (Buffer.byteLength(result.text, 'utf8') > MAX_RESPONSE_BYTES) {
     return failure('unusable_output', attempts, 'provider response exceeded 1 MB');
   }
-  const parsed = parseOutput(result.text, input);
+  const parsed = parseOutput(result.text, input, restore);
   if (parsed.ok) {
     return {
       ok: true,
@@ -275,7 +325,8 @@ async function summarizeWithAgentCli(
   if (!ctx.credentials.present || ctx.model.trim() === '') {
     return failure('no_provider', 0, 'the agent-cli preset is not configured');
   }
-  const prompt = buildSummarizerPrompt(input, 'text-json');
+  const { sent, restore } = aliasObserverInput(input);
+  const prompt = buildSummarizerPrompt(sent, 'text-json');
   const childPrompt = `${prompt.system}\n\nInput JSON:\n${prompt.user}`;
   let attempts = 0;
   while (attempts < 2) {
@@ -290,7 +341,7 @@ async function summarizeWithAgentCli(
       timeoutMs: ctx.timeoutMs ?? (testFault('provider-hang') ? 500 : REQUEST_TIMEOUT_MS),
       ...(ctx.spawn === undefined ? {} : { spawn: ctx.spawn }),
     });
-    const outcome = agentCliResultOutcome(result, input, attempts);
+    const outcome = agentCliResultOutcome(result, input, restore, attempts);
     if (outcome !== null) return outcome;
   }
   return failure('unusable_output', attempts, 'the agent CLI response was unusable');
@@ -440,6 +491,7 @@ function providerTextCheck(
 function providerTextOutcome(
   result: Awaited<ReturnType<GenerateText>>,
   input: ObserverInput,
+  restore: Restore,
   ctx: SummarizeContext,
   attempts: number,
   capturedHeaders: () => Record<string, string> | undefined,
@@ -454,7 +506,7 @@ function providerTextOutcome(
   const textCheck = providerTextCheck(result, attempts);
   if (textCheck.kind === 'settled') return textCheck.outcome;
 
-  const parsed = parseOutput(result.text, input);
+  const parsed = parseOutput(result.text, input, restore);
   if (!parsed.ok) {
     if (attempts < 2) return null;
     return failure('unusable_output', attempts, parsed.detail);
@@ -505,7 +557,8 @@ export async function summarizeWithProvider(
   if (ctx.preset === 'agent-cli') return await summarizeWithAgentCli(input, ctx);
 
   const requestOptions = providerRequestOptions(ctx.preset);
-  const prompt = buildProviderPrompt(input, requestOptions);
+  const { sent, restore } = aliasObserverInput(input);
+  const prompt = buildProviderPrompt(sent, requestOptions);
   const transportFetch = faultFetch(ctx.fetch ?? globalThis.fetch);
   let capturedHeaders: Record<string, string> | undefined;
   const captureFetch: typeof globalThis.fetch = async (request, init) => {
@@ -539,7 +592,7 @@ export async function summarizeWithProvider(
       const result = await generateText(
         providerGenerateOptions(model, prompt, ctx, requestOptions, output),
       );
-      outcome = providerTextOutcome(result, input, ctx, attempts, capturedResponseHeaders);
+      outcome = providerTextOutcome(result, input, restore, ctx, attempts, capturedResponseHeaders);
     } catch (error) {
       outcome = providerErrorOutcome(error, APICallError, ctx, reservation, attempts);
     }

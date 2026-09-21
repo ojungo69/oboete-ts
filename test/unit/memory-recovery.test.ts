@@ -99,7 +99,8 @@ for (const at of ['before', 'send']) test(`a checkout replaced ${at} detection c
       },
       fetch: async (_url, options) => {
         const input = sentInput(options);
-        leaked ||= input.events.some((event) => event.id === sourceId);
+        // Events travel under per-request aliases (#329): the old tool call is known by its path.
+        leaked ||= JSON.stringify(input.events).includes('secrets/fixture.txt');
         return openAiResponse(providerOutput(input.events[0].id));
       },
     });
@@ -194,22 +195,26 @@ test('retained memory provenance rechecks source paths after full raw activity e
       output.observations[0].citations = { files_read: [], files_modified: [], commits: [] };
       return openAiResponse(output);
     });
-    const memoryId = fixture.withDb((db) => {
-      const id = String(db.prepare("SELECT id FROM memories WHERE type = 'discovery'").get()!.id);
+    const memory = fixture.withDb((db) => {
+      const row = db.prepare("SELECT id, title FROM memories WHERE type = 'discovery'").get()!;
       const token = claimLease(db, { pid: process.pid, now: NOW + 31 * DAY })!;
       purgeExpiredEvents(db, token, NOW + 31 * DAY);
       releaseLease(db, token, () => true);
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE kind = 'tool_call'").get()?.n, 0);
-      return id;
+      return { id: String(row.id), title: String(row.title) };
     });
     writeFileSync(join(original, '.oboete.toml'), '[privacy]\nsecret_paths = ["secrets/**"]\n');
     await captureEndedSession(fixture, { sessionId: 'evidence-after', cwd: original, prompts: ['Explain the retry behavior.'] });
+    // Requests name nearby records by per-request alias (#329), so the memory is matched by its title,
+    // and outside the fetch, whose own assertion failure the provider path would catch.
+    let leaked = false;
     await observeAt(fixture, NOW + 31 * DAY, async (_url, options) => {
       const input = sentInput(options);
-      assert.ok(input.nearby.every((candidate) => candidate.id !== memoryId));
+      leaked ||= input.nearby.some((candidate) => candidate.title === memory.title);
       return openAiResponse(providerOutput(input.events[0].id));
     });
-    fixture.withDb((db) => assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memoryId)?.sensitivity, 'secret'));
+    assert.equal(leaked, false, 'the memory whose evidence path became secret is not sent');
+    fixture.withDb((db) => assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memory.id)?.sensitivity, 'secret'));
   });
 });
 
@@ -241,7 +246,8 @@ for (const verdict of ['clean', 'failed', 'late', 'deleted'] as const) {
         },
         fetch: async (_url, options) => {
           const input = sentInput(options);
-          leaked ||= input.nearby.some((candidate) => candidate.id === memory.id);
+          // Nearby records travel under per-request aliases (#329): the memory is known by its content.
+          leaked ||= input.nearby.some((candidate) => candidate.title === memory.title && candidate.body === memory.body);
           const output = providerOutput(input.events[0].id);
           output.observations[0].body = 'A separate retry result was recorded.';
           return openAiResponse(output);
@@ -392,15 +398,17 @@ test('a nearby memory is rechecked before its body is included in a new request'
     fixture.withDb((db) => db.prepare("INSERT INTO memory_sources (memory_id, citation_kind, citation_value) VALUES (?, 'file_read', 'src/rotated-nearby-fixture-value.txt')").run(memoryId));
     fixture.env.OBOETE_OPENROUTER_API_KEY = 'rotated-nearby-fixture-value';
     await captureEndedSession(fixture, { sessionId: 'nearby-after', prompts: ['Explain the retry behavior.'] });
+    const title = fixture.withDb((db) => String(db.prepare('SELECT title FROM memories WHERE id = ?').get(memoryId)!.title));
     let calls = 0;
+    let leaked = false;
     await observeAt(fixture, NOW + 1_000, async (_url, options) => {
       calls += 1;
-      assert.ok(!String(options?.body).includes('rotated-nearby-fixture-value'));
       const input = sentInput(options);
-      assert.ok(input.nearby.every((candidate) => candidate.id !== memoryId));
+      leaked ||= String(options?.body).includes('rotated-nearby-fixture-value') || input.nearby.some((candidate) => candidate.title === title);
       return openAiResponse(providerOutput(input.events[0].id));
     });
     assert.equal(calls, 1);
+    assert.equal(leaked, false, 'the rechecked memory is not sent, not even without its body');
     fixture.withDb((db) => {
       assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memoryId)?.sensitivity, 'secret');
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE memory_id = ? AND evidence IS NOT NULL').get(memoryId)?.n, 0);
@@ -458,8 +466,10 @@ test('a large source and more than fifty sources complete through lossless pages
       assert.equal(await observeAt(fixture, NOW + 5_000 * attempt, fetch), 0);
     }
     assert.ok(calls > 2);
-    const fragments = sent.filter((event) => event.id === sourceId).map((event) => event.fragment!);
+    // Requests name events by per-request alias (#329); the large source is the only one paged.
+    const fragments = sent.flatMap((event) => (event.fragment === undefined ? [] : [event.fragment]));
     assert.ok(fragments.length > 1);
+    assert.equal(new Set(fragments.map((fragment) => fragment.source_hash)).size, 1, 'every page is one source');
     let offset = 0;
     for (const fragment of fragments) {
       assert.equal(fragment.start, offset, 'acknowledged ranges cannot repeat or skip');
@@ -471,7 +481,15 @@ test('a large source and more than fifty sources complete through lossless pages
         WHERE raw_event_id = ? ORDER BY recorded_at`).all(sourceId),
     }))));
     assert.equal(JSON.parse(fragments.map((fragment) => fragment.text).join('')).text, large);
-    assert.notEqual(sent[1].id, sourceId, 'other sources get a turn before the large source continues');
+    assert.equal(sent[1].fragment, undefined, 'other sources get a turn before the large source continues');
+    // Each page's alias came back as the one original id: a stored memory cites every sent range of it.
+    fixture.withDb((db) => {
+      const cited = db.prepare(`SELECT 1 FROM memory_sources WHERE raw_event_id = ? AND portion_start = ?
+        AND portion_end = ? AND source_hash = ? AND evidence IS NOT NULL`);
+      for (const fragment of fragments) {
+        assert.ok(cited.get(sourceId, fragment.start, fragment.end, fragment.source_hash), `${fragment.start}-${fragment.end}`);
+      }
+    });
     fixture.withDb((db) => {
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE kind = 'prompt' AND processing_state <> 'processed'").get()?.n, 0);
       assert.ok(Number(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE evidence IS NOT NULL').get()?.n) > 0);
@@ -563,7 +581,8 @@ test('explicit reprocessing selects one retained legacy source without starting 
     assert.equal(await runObserveForFixture(fixture, {
       fetch: async (_url, options) => {
         calls += 1;
-        assert.deepEqual(sentInput(options).events.map((event) => event.id), [ids[0]]);
+        // Only the chosen source travels (by per-request alias, #329, so it is matched by its text).
+        assert.deepEqual(sentInput(options).events.map((event) => [event.id, event.text]), [['e1', prompts[0]]]);
         return openAiResponse(providerOutput(ids[0]));
       },
     }, ['--reprocess-source', ids[0]]), 0);
@@ -620,9 +639,11 @@ for (const decision of ['update', 'delete'] as const) {
       const old = providerOutput(oldId);
       old.observations[0].title = 'Original upload service retry';
       old.observations[0].body = 'The upload service retry originally ran once.';
-      old.observations[0].classification = { decision, target: memoryId, reason: 'Original source describes the retry.' };
+      const currentTitle = current.observations[0].title;
       await observeAt(fixture, NOW + 6 * 60_000, async (_url, options) => {
-        assert.ok(sentInput(options).nearby.some((memory) => memory.id === memoryId));
+        const sent = sentInput(options).nearby.find((memory) => memory.title === currentTitle);
+        assert.ok(sent, 'the protected memory was sent');
+        old.observations[0].classification = { decision, target: sent.id, reason: 'Original source describes the retry.' };
         return openAiResponse(old);
       });
       fixture.withDb((db) => {
@@ -755,12 +776,14 @@ test('confirmation followed by deletion cannot restore evidence for the deleted 
     const memoryId = fixture.withDb((db) => String(db.prepare("SELECT id FROM memories WHERE type = 'discovery'").get()!.id));
     await captureEndedSession(fixture, { sessionId: 'after-delete', prompts: ['Remove the obsolete retry behavior.'] });
     const sourceId = eventId(fixture, 'Remove the obsolete retry behavior.');
+    const memoryTitle = fixture.withDb((db) => String(db.prepare('SELECT title FROM memories WHERE id = ?').get(memoryId)!.title));
     await observeAt(fixture, NOW + 60_000, async (_url, options) => {
-      assert.ok(sentInput(options).nearby.some((memory) => memory.id === memoryId));
+      const sent = sentInput(options).nearby.find((memory) => memory.title === memoryTitle);
+      assert.ok(sent, 'the memory was sent');
       const confirm = providerOutput(sourceId).observations[0];
       const remove = providerOutput(sourceId).observations[0];
-      confirm.classification = { decision: 'noop', target: memoryId, reason: 'The existing note matches.' };
-      remove.classification = { decision: 'delete', target: memoryId, reason: 'The obsolete note is removed.' };
+      confirm.classification = { decision: 'noop', target: sent.id, reason: 'The existing note matches.' };
+      remove.classification = { decision: 'delete', target: sent.id, reason: 'The obsolete note is removed.' };
       return openAiResponse({ ...providerOutput(sourceId), observations: [confirm, remove] });
     });
     fixture.withDb((db) => {

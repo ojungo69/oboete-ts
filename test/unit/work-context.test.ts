@@ -55,8 +55,10 @@ for (const outputKind of ['update', 'add', 'checkpoint'] as const) for (const re
         output.observations[0].title = parentId === '' ? 'Uploader policy' : 'Updated uploader policy';
         output.observations[0].body = detail + (parentId === '' ? '' : ' Keep it for the follow-up.');
         if (parentId !== '') {
-          assert.ok(request.nearby.some((row) => row.id === parentId), 'the old memory was actually sent');
-          if (outputKind === 'update') output.observations[0].classification = { decision: 'update', target: parentId, reason: 'The uploader policy was refined.' };
+          // Requests name nearby records by per-request alias (#329); the parent is found by its title.
+          const parent = request.nearby.find((row) => row.title === 'Uploader policy');
+          assert.ok(parent, 'the old memory was actually sent');
+          if (outputKind === 'update') output.observations[0].classification = { decision: 'update', target: parent.id, reason: 'The uploader policy was refined.' };
           if (outputKind === 'checkpoint') output.checkpoint = { decision: 'replace', purpose: 'Finish the uploader',
             constraints: [detail], decisions: [], outstanding: ['Verify the new input.'],
             source_event_ids: request.events.map((row) => row.id), reason: 'Progress updated from supplied context.' };
@@ -75,6 +77,9 @@ for (const outputKind of ['update', 'add', 'checkpoint'] as const) for (const re
         const memory = getMemory(db, id, memoryScope(db, { repoId: String(current.repo_id), workId: String(current.work_id), destination: 'injection' }));
         assert.ok(memory);
         assert.ok(memory.body?.includes(detail));
+        // The aliased target came back as the stored parent: the update closed it, not a new add.
+        if (outputKind === 'update') assert.deepEqual({ ...db.prepare('SELECT superseded_by, valid_to IS NOT NULL AS closed FROM memories WHERE id = ?').get(parentId) },
+          { superseded_by: id, closed: 1 });
         const location = { repoId: String(current.repo_id), bindingId: String(current.id), home: fixture.paths.home };
         assert.equal((await filterReadOutput(db, location, [memory], [])).memories.length, 1);
         if (revoke === 'path rule') writeFileSync(join(fixture.home, '.oboete.toml'), '[privacy]\nsecret_paths = ["protected/**"]\n');

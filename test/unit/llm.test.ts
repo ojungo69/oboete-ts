@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { PRESET_CATALOG, type Credentials } from '../../src/config.js';
 import { MAX_OBSERVATIONS, observerOutputJsonSchema, type ObserverInput, type ObserverOutput } from '../../src/observer/contract.js';
-import { buildSummarizerPrompt, summarizeWithProvider } from '../../src/observer/llm.js';
+import { aliasObserverInput, buildSummarizerPrompt, summarizeWithProvider } from '../../src/observer/llm.js';
 import { cliSpawn } from '../helpers/agent-cli.js';
 
 const MODEL = PRESET_CATALOG.openrouter.defaultModel;
@@ -39,6 +39,14 @@ function output(sourceEventId = 'e1'): ObserverOutput {
     ],
   };
 }
+
+const HEX_A = 'a'.repeat(63) + '1';
+const HEX_B = 'b'.repeat(63) + '2';
+const HEX_INPUT: ObserverInput = {
+  ...INPUT,
+  events: [{ id: HEX_A, kind: 'prompt', text: 'この不具合を直してください。' }, { id: HEX_B, kind: 'prompt', text: '続きです。' }],
+  nearby: [{ id: 'm_stored_memory', type: 'bugfix', title: '古い修正', body: '以前の修正。', deleted: false }],
+};
 
 function apiCredentials(): Credentials {
   return {
@@ -200,7 +208,7 @@ test('schema success returns validated output, model id, attempts, and header ne
   let requestBody: Record<string, unknown> | undefined;
   const scripted = scriptedFetch(async (_input, init) => {
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return workersResponse(output(), { 'cf-aig-neurons': '45.25' });
+    return workersResponse(output('e1'), { 'cf-aig-neurons': '45.25' });
   });
   const harness = httpHarness(scripted.fetch, {
     preset: 'workers-ai',
@@ -212,10 +220,11 @@ test('schema success returns validated output, model id, attempts, and header ne
       values: { accountId: 'account-123', token: 'test-token' },
     },
   });
-  const result = await summarizeWithProvider(INPUT, harness.ctx);
+  // A 64-hex id as stored: the model answers with its alias and gets the stored id back (#329).
+  const result = await summarizeWithProvider(HEX_INPUT, harness.ctx);
   assert.deepEqual(result, {
     ok: true,
-    output: output(),
+    output: output(HEX_A),
     resolvedModel: PRESET_CATALOG['workers-ai'].defaultModel,
     neurons: 45.25,
     attempts: 1,
@@ -609,4 +618,90 @@ test('a consent change after the agent-cli reservation stops the chain before th
 test('the agent CLI stub answers a spawn call that omits options, as `typeof spawn` allows', () => {
   const cli = cliSpawn([]);
   assert.doesNotThrow(() => cli.spawn('claude', ['--version']));
+});
+
+test('aliasObserverInput names events e1.. and nearby records m1.. and restores only through its own tables', () => {
+  const paged = { ...HEX_INPUT, events: [...HEX_INPUT.events, { id: HEX_A, kind: 'prompt' as const, text: '同じ出来事の続き' }] };
+  const { sent, restore } = aliasObserverInput(paged);
+  assert.deepEqual(sent.events.map((event) => event.id), ['e1', 'e2', 'e1'], 'pages of one event share its alias');
+  assert.deepEqual(sent.nearby.map((row) => row.id), ['m1']);
+  const withoutIds = (value: ObserverInput) => ({ ...value, events: value.events.map((event) => ({ ...event, id: '' })),
+    nearby: value.nearby.map((row) => ({ ...row, id: '' })) });
+  assert.deepEqual(withoutIds(sent), withoutIds(paged), 'nothing but the ids changes');
+  assert.equal(JSON.stringify(sent).includes(HEX_A), false);
+  const answer = output('e2');
+  answer.observations[0].source_event_ids = ['e1', 'e2', 'e9', 'm1', HEX_B];
+  answer.observations[0].classification = { decision: 'update', target: 'm1', reason: '更新' };
+  const restored = restore(answer) as ObserverOutput;
+  assert.deepEqual(restored.observations[0].source_event_ids, [HEX_A, HEX_B, 'e9', 'm1', HEX_B],
+    'an unknown alias and an m alias cited as a source stay for validation to reject; a copied id stays');
+  assert.equal(restored.observations[0].classification.target, 'm_stored_memory');
+  assert.deepEqual(restored.checkpoint.source_event_ids, [HEX_B]);
+  assert.deepEqual(answer.observations[0].source_event_ids, ['e1', 'e2', 'e9', 'm1', HEX_B], 'the parsed answer is not mutated');
+
+  // A second request with the same ids in reverse order has its own tables.
+  const reversed = aliasObserverInput({ ...HEX_INPUT, events: [...HEX_INPUT.events].reverse() });
+  assert.deepEqual((reversed.restore(output('e1')) as ObserverOutput).observations[0].source_event_ids, [HEX_B]);
+  assert.deepEqual((restore(output('e1')) as ObserverOutput).observations[0].source_event_ids, [HEX_A]);
+
+  for (const malformed of [null, 'text', [], {}, { observations: null, checkpoint: 3 }, { observations: [null, { source_event_ids: 'e1', classification: null }] }]) {
+    assert.doesNotThrow(() => restore(malformed));
+  }
+  assert.deepEqual(restore({ observations: [{ source_event_ids: 'e1' }] }), { observations: [{ source_event_ids: 'e1' }] }, 'a malformed answer reaches validation as it came');
+});
+
+test('the provider sees aliases, and an aliased answer, a retried one and a copied id all come back as stored ids', async () => {
+  const bodies: string[] = [];
+  const aliased = output('e1');
+  aliased.observations[0].classification = { decision: 'update', target: 'm1', reason: '更新' };
+  const scripted = scriptedFetch(
+    async (_input, init) => { bodies.push(String(init?.body)); return openAiResponse('{"observations": null}'); },
+    async (_input, init) => { bodies.push(String(init?.body)); return openAiResponse(JSON.stringify(aliased)); },
+  );
+  const result = await summarizeWithProvider(HEX_INPUT, httpHarness(scripted.fetch).ctx);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.output.observations[0].source_event_ids, [HEX_A]);
+    assert.equal(result.output.observations[0].classification.target, 'm_stored_memory');
+    assert.deepEqual(result.output.checkpoint.source_event_ids, [HEX_A]);
+  }
+  assert.equal(result.attempts, 2);
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], bodies[1], 'the retry sends the same aliases');
+  assert.equal(bodies[0].includes(HEX_A) || bodies[0].includes('m_stored_memory'), false);
+  assert.match(bodies[0], /\\"id\\":\\"e1\\"/);
+
+  const copied = scriptedFetch(async () => openAiResponse(JSON.stringify(output(HEX_A))));
+  const direct = await summarizeWithProvider(HEX_INPUT, httpHarness(copied.fetch).ctx);
+  assert.equal(direct.ok && direct.output.observations[0].source_event_ids[0], HEX_A, 'a correctly copied stored id still validates');
+
+  const nearbyAsSource = scriptedFetch(
+    async () => openAiResponse(JSON.stringify(output('m1'))),
+    async () => openAiResponse(JSON.stringify(output('m1'))),
+  );
+  const refused = await summarizeWithProvider(HEX_INPUT, httpHarness(nearbyAsSource.fetch).ctx);
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal(refused.reason, 'unusable_output');
+  assert.equal(refused.attempts, 2);
+});
+
+test('a deeply nested answer is retried once then unusable on both paths, as before aliases', async () => {
+  const deep = `{"observations":${'['.repeat(5_000)}${']'.repeat(5_000)}}`;
+  const scripted = scriptedFetch(async () => openAiResponse(deep), async () => openAiResponse(deep));
+  const cli = cliSpawn([deep, deep]);
+  for (const ctx of [httpHarness(scripted.fetch).ctx, cliHarness(cli).ctx]) {
+    const result = await summarizeWithProvider(HEX_INPUT, ctx);
+    assert.equal(!result.ok && result.reason, 'unusable_output');
+    assert.equal(result.attempts, 2);
+  }
+});
+
+test('the agent CLI path sends aliases and restores an aliased answer too', async () => {
+  const cli = cliSpawn([JSON.stringify(output('e2'))]);
+  const result = await summarizeWithProvider(HEX_INPUT, cliHarness(cli).ctx);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.output.observations[0].source_event_ids, [HEX_B]);
+  assert.equal(cli.prompts.length, 1);
+  assert.match(cli.prompts[0], /"id":"e2"/);
+  assert.equal(cli.prompts[0].includes(HEX_B), false);
 });
