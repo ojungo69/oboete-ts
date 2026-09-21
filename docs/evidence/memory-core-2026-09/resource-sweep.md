@@ -138,9 +138,10 @@ as in the 1,000-event run.
 - What made the run stop is separate and is #336. Spool recovery bound the spooled opening prompts
   of a phase B session to a `late_source` span with no work, as `contracts/work.md` requires. The
   harness then waited for a `pending = 0` that no run reaches without a work choice.
-- The fix for #336 is not merged yet. It is to count such sources apart from `pending`, so the
-  harness reports them instead of waiting on them, and to log the SQLite result code next to
-  `ERR_SQLITE_ERROR`.
+- Since the #336 fix, `doctor` counts such sources as awaiting a work choice, apart from
+  `pending`. The harness no longer waits on them: it reports the count and fails `not-stuck` while
+  any remain, because this fixture never chooses work, so one means a storage fault happened. The
+  logs also carry the SQLite result code next to `ERR_SQLITE_ERROR`.
 - The third run is the row above. `c075b647` is a local commit: `64e16e5a` plus that logging change
   to `errorCode()`, made to name the error. No error occurred in it.
 
