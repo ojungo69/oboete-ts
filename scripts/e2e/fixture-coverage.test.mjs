@@ -26,12 +26,13 @@ test('the bulk generator adds filler only and is deterministic', async () => {
     const committed = path.join(ROOT, 'test/fixtures/events-1000.jsonl');
     const standard = generate({ out: path.join(dir, 'standard.jsonl') });
     assert.ok(fs.readFileSync(standard.path).equals(fs.readFileSync(committed)), 'the default no longer writes the committed fixture');
-    const first = generate({ target: 2000, out: path.join(dir, 'a.jsonl') });
-    generate({ target: 2000, out: path.join(dir, 'b.jsonl') });
+    // 5,000 is past what the old fixed guard of 80 filler sessions could reach (about 3,600 events).
+    const first = generate({ target: 5000, out: path.join(dir, 'a.jsonl') });
+    generate({ target: 5000, out: path.join(dir, 'b.jsonl') });
     const body = fs.readFileSync(first.path, 'utf8');
     assert.equal(body, fs.readFileSync(path.join(dir, 'b.jsonl'), 'utf8'));
-    assert.ok(first.report.total >= 2000, `${first.report.total} events`);
-    for (const n of Object.values(first.report.byAgent)) assert.ok(n >= 500, `an agent has ${n} events`);
+    assert.ok(first.report.total >= 5000, `${first.report.total} events`);
+    for (const n of Object.values(first.report.byAgent)) assert.ok(n >= 1250, `an agent has ${n} events`);
     const events = body.trimEnd().split('\n').map((line) => JSON.parse(line));
     const tagged = (key) => events.filter((event) => event.tags?.[key] !== undefined).length;
     assert.deepEqual([tagged('fact'), tagged('recall'), tagged('size')], [40, 40, 4]);
