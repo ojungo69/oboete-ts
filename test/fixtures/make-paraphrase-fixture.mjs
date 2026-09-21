@@ -34,7 +34,7 @@ const reword = (value, from, to) => {
   return value;
 };
 
-let asked = 0;
+const asked = new Set();
 const result = lines.map((line) => {
   const event = JSON.parse(line);
   const fact = event.tags?.fact;
@@ -44,8 +44,8 @@ const result = lines.map((line) => {
   const before = JSON.stringify(event.payload);
   event.payload = reword(event.payload, queries.get(id), paraphrase[id]);
   if (JSON.stringify(event.payload) === before) throw new Error(`recall line ${event.seq} does not quote ${id}'s question`);
-  asked += 1;
+  asked.add(id);
   return JSON.stringify(event);
 });
-if (asked !== queries.size) throw new Error(`reworded ${asked} recall lines for ${queries.size} facts`);
+if (asked.size !== queries.size) throw new Error(`reworded recall lines for ${asked.size} of ${queries.size} facts`);
 writeFileSync(out, `${result.join('\n')}\n`);
