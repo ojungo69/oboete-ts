@@ -195,7 +195,8 @@ function usage(): string {
     + 'workers, so a remote preset can be evaluated. It is refused unless the home\'s consent\n'
     + 'record matches its configuration. Off by default: the replay strips them.\n'
     + '--settle-ms bounds each wait for the worker to finish the ended sessions (default 300000).\n'
-    + 'A real provider needs longer than the rule-based fallback; the bound never extends itself.\n'
+    + 'A real provider needs longer than the rule-based fallback. The worker stops after 20 minutes\n'
+    + 'and is not restarted within a wait, so more than 1200000 only delays the timeout.\n'
   );
 }
 
