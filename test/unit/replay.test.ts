@@ -122,7 +122,8 @@ function shortReplayFixture(home: string): string {
 test('--pass-credentials is refused before anything starts unless the consent record matches (#328)', async () => {
   await withTempHome((home) => {
     const path = shortReplayFixture(home);
-    const env = { ...process.env, OBOETE_CF_API_TOKEN: 'fake-token-0123456789', OBOETE_CF_ACCOUNT_ID: 'fake-account-0123456789' };
+    // HOME too: the launcher creates its compile cache under HOME before the replay starts.
+    const env = { ...process.env, HOME: home, OBOETE_CF_API_TOKEN: 'fake-token-0123456789', OBOETE_CF_ACCOUNT_ID: 'fake-account-0123456789' };
     const replay = (...flags: string[]) => spawnSync(process.execPath,
       ['dist/oboete.mjs', 'fixture', 'replay', path, '--home', home, '--json', ...flags], { encoding: 'utf8', timeout: 10_000, env });
     for (const consent of ['', '[consent]\nhash = "0000"\n']) {
