@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { configSchema } from '../../src/config.js';
 import { workerItem } from '../../src/doctor/storage.js';
+import { normalizeForIdentity } from '../../src/db/identity.js';
 import { openDatabase } from '../../src/db/open.js';
 import { grantVisibility } from '../../src/db/queries.js';
 import type { Line } from '../../src/fixture/replay.js';
@@ -522,7 +523,7 @@ test('rrfFuse ranks a row present in both tables above a row in one', () => {
   assert.equal(fused.find((item) => item.id === 'like')?.score_rrf, 0);
 });
 
-test('mmrSelect rejects a near-duplicate with reason mmr_redundant', () => {
+test('mmrSelect rejects an identical duplicate with reason mmr_redundant', () => {
   const original = row({
     id: 'orig',
     title: 'sqlite busy timeout',
@@ -554,6 +555,87 @@ test('mmrSelect rejects a near-duplicate with reason mmr_redundant', () => {
     rejected.map((item) => ({ id: item.row.id, reason: item.reason })),
     [{ id: 'dup', reason: 'mmr_redundant' }],
   );
+});
+
+test('mmrSelect rejects an A13 identity duplicate with reason mmr_redundant', () => {
+  const original = row({
+    id: 'orig',
+    title: 'sqlite timeout',
+    body: 'the busy timeout is five seconds',
+    score_rrf: 0.03,
+    scoreTrigram: -10,
+  });
+  const duplicate = row({
+    id: 'dup',
+    title: '  ｓｑｌｉｔｅ   timeout ',
+    body: 'The  busy\ntimeout is FIVE seconds',
+    score_rrf: 0.029,
+    scoreTrigram: -9,
+  });
+  assert.equal(normalizeForIdentity(original.title), normalizeForIdentity(duplicate.title));
+  assert.equal(normalizeForIdentity(original.body), normalizeForIdentity(duplicate.body));
+  const { selected, rejected } = mmrSelect([original, duplicate], { lambda: 0.5, limit: 2 });
+  assert.deepEqual(
+    selected.map((item) => item.id),
+    ['orig'],
+  );
+  assert.deepEqual(
+    rejected.map((item) => ({ id: item.row.id, reason: item.reason })),
+    [{ id: 'dup', reason: 'mmr_redundant' }],
+  );
+});
+
+test('mmrSelect keeps a changed fact whose trigram cosine is above 0.99', () => {
+  const shared =
+    'Secretlint runs before the first write, including the spool. A pack line is prefixed with a quotation marker. Imported rows wait in quarantine until the worker classifies them. The viewer binds a loopback port chosen at launch. Deployment keys rotate on the first Monday of each month.';
+  const cedar = row({
+    id: 'cedar',
+    title: 'build token',
+    body: `${shared} the build token is cedar`,
+    score_rrf: 0.03,
+    scoreTrigram: -10,
+  });
+  const maple = row({
+    id: 'maple',
+    title: 'build token',
+    body: `${shared} the build token is maple`,
+    score_rrf: 0.029,
+    scoreTrigram: -9,
+  });
+  assert.ok(charTrigramCosine(`${cedar.title} ${cedar.body}`, `${maple.title} ${maple.body}`) > 0.99);
+  const { selected, rejected } = mmrSelect([cedar, maple], { lambda: 0.5, limit: 2 });
+  assert.deepEqual(
+    selected.map((item) => item.id),
+    ['cedar', 'maple'],
+  );
+  assert.deepEqual(rejected, []);
+});
+
+test('mmrSelect keeps rows that match only across the title/body boundary', () => {
+  const packed = row({
+    id: 'packed-a',
+    title: 'alpha beta',
+    body: 'gamma',
+    score_rrf: 0.03,
+    scoreTrigram: -10,
+  });
+  const split = row({
+    id: 'packed-b',
+    title: 'alpha',
+    body: 'beta gamma',
+    score_rrf: 0.029,
+    scoreTrigram: -9,
+  });
+  assert.equal(
+    normalizeForIdentity(`${packed.title} ${packed.body}`),
+    normalizeForIdentity(`${split.title} ${split.body}`),
+  );
+  const { selected, rejected } = mmrSelect([packed, split], { lambda: 0.5, limit: 2 });
+  assert.deepEqual(
+    selected.map((item) => item.id).sort(),
+    ['packed-a', 'packed-b'],
+  );
+  assert.deepEqual(rejected, []);
 });
 
 test('mmrSelect keeps multiple LIKE-only rows up to the limit', () => {
@@ -995,15 +1077,13 @@ test('two distinct facts in similar words survive a shallow candidate list', () 
   for (const depth of [2, 5, 10, 11]) assertPairKept(mmr272(depth), depth);
 });
 
-// Artifact for issue #272, RED until the rule is fixed. Twelve is where the pair starts being
-// dropped: the candidate's relevance, normalized to the best RRF score, falls under its trigram
-// similarity to the row already selected, and `mmrSelect` rejects it outright instead of ranking
-// it lower. Eleven is pinned above, so the two tests bracket the boundary, and everything deeper
-// stays dropped.
-test('a distinct fact behind a deeper candidate list is not dropped as redundant',
-  { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
-    for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
-  });
+// Issue #272: a distinct fact behind a deeper candidate list is kept. Identity-only rejection
+// no longer drops it when RRF-normalized relevance falls under trigram similarity to a selected
+// row. Eleven is pinned above, so the two tests still bracket the former boundary; twelve,
+// fifteen and twenty must keep both facts.
+test('a distinct fact behind a deeper candidate list is not dropped as redundant', () => {
+  for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
+});
 
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
   // Distinct bodies, or MMR drops b and c as duplicates of a and the comparison below is between
