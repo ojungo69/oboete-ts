@@ -291,7 +291,9 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   format 1 applies by default. Since export now writes format 2, a restore is
   `oboete import backup.jsonl --apply` — into a database that already exists at the current schema.
   A format 2 apply checks the destination first and exits 2 with `destination_schema_not_ready`
-  when it is missing, behind or ahead, so run `oboete setup` on a new machine before restoring.
+  when it is missing, behind or ahead. On a new machine the database is created by a setup run that
+  gets past the consent screen — `oboete setup --provider none` does, a bare `oboete setup` on the
+  default remote preset stops there and writes nothing — so set up first, then restore.
   Newly inserted readable memories land quarantined, at `local_only` or stricter and
   `review_state = imported`, and stay out of search and injection until the worker classifies them;
   a row that matches a memory you already have keeps your review state, and an incoming label never
@@ -356,8 +358,10 @@ memory. If the session identifier itself fell beyond the prefix, nothing is stor
 counter is incremented instead. In the partial case the metadata is not withheld the way the text
 is — the paths a readable prefix named can still reach a rule-based change record or a session
 summary — so read the guarantee as one about the text. An event well under that bound can lose
-content too: a tool call keeps at most 20,000 characters of its input text and at most 50 of its
-paths, and the rest is dropped before the row is written.
+content too: the rendered input of a tool call is kept to 20,000 characters and its path list to 50
+entries before the row is written. A shell command is not rendered that way and is kept whole to
+the 1 MB text cap, and a path past the fiftieth can still appear in text the call carried, such as
+a patch.
 Repository rules in `.oboete.toml` are bounded too: at most 64 entries of at most 256 characters
 each.
 
@@ -578,10 +582,13 @@ Implemented and verified here is not the same as qualified. At this version:
   native agents in sequence, but it asserts only that the seeded facts reach the receiving agent.
   That the receiving agent is given the selected work item and its checkpoint, and no unrelated
   one, is exercised by generated pairs (#265).
-- **Recall against a real summarizer is measured only by that daily run, and it is failing.** The
-  evaluation in this repository runs with no provider, so its figure (0 of 40) is what the rules
-  alone produce. The daily run on the isolated account does use one: on this bundle it passes 1 of
-  12 agent pairs, against 12 of 12 on the previous bundle the day before (#274).
+- **Recall against a real summarizer is below target wherever it has been measured, and no
+  measurement is current.** The fixture evaluation in this repository runs with no provider, so its
+  0 of 40 is what the rules alone produce. Two receipts used a real one, both from earlier
+  revisions: a Workers AI replay at `d724d5df` recalled 8 of 40 planted facts against a 90% target,
+  and the daily native run on the 009 bundle (`6b683213`, 2026-09-17) passed 1 of 12 agent pairs
+  against 12 of 12 on the bundle before it (#274). Retrieval has been repaired since both; nothing
+  re-measures it at this revision.
 - **Scale and long-run behaviour are open.** The resource sweep replays about a thousand events in
   roughly four minutes and then holds a reader open for 24.9 seconds against the resident worker;
   ten thousand and a hundred thousand events are #267, and seven days of real use is #268. Nothing
