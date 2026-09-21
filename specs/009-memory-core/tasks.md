@@ -515,8 +515,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   closed too: MMR rejects only identical content and orders the rest (E19).
 - T024 (open, 2026-09-21): the owner authorised a local run and one Workers AI run, and no profile
   qualified (E20). The paraphrase corpus exists (`test/fixtures/paraphrase-queries.json`). Local
-  `gemma4:12b` validates 5-7 of 14-20 observer batches, and the failures are mis-copied event ids
-  (#329). Workers AI cannot run through the replay, which strips credentials by design (#328). So the
+  `gemma4:12b` validates 5-7 of 14-20 observer batches; the run that logged validation detail failed
+  on mis-copied event ids (#329). Workers AI cannot run through the replay, which strips credentials by design (#328). So the
   measurement that would justify semantic retrieval does not exist yet. Search stays lexical, with
   semantic search in M2 (`LEXICAL_NOTE` in `src/memories-cli.ts`); qualification remains #266.
 - T041 (open, 2026-09-18): the twelve native ordered pairs on the 009 bundle are #265 and real-model

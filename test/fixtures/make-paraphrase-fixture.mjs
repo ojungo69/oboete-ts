@@ -21,6 +21,9 @@ for (const line of lines) {
 if (queries.size !== Object.keys(paraphrase).length || [...queries.keys()].some((id) => !(id in paraphrase))) {
   throw new Error('paraphrase-queries.json must reword exactly the facts events-1000.jsonl plants');
 }
+if (Object.values(paraphrase).some((query) => typeof query !== 'string' || query.trim() === '')) {
+  throw new Error('every paraphrase must be a non-empty string');
+}
 
 const reword = (value, from, to) => {
   if (typeof value === 'string') return value.split(from).join(to);
