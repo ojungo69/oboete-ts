@@ -195,22 +195,26 @@ test('retained memory provenance rechecks source paths after full raw activity e
       output.observations[0].citations = { files_read: [], files_modified: [], commits: [] };
       return openAiResponse(output);
     });
-    const memoryId = fixture.withDb((db) => {
-      const id = String(db.prepare("SELECT id FROM memories WHERE type = 'discovery'").get()!.id);
+    const memory = fixture.withDb((db) => {
+      const row = db.prepare("SELECT id, title FROM memories WHERE type = 'discovery'").get()!;
       const token = claimLease(db, { pid: process.pid, now: NOW + 31 * DAY })!;
       purgeExpiredEvents(db, token, NOW + 31 * DAY);
       releaseLease(db, token, () => true);
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE kind = 'tool_call'").get()?.n, 0);
-      return id;
+      return { id: String(row.id), title: String(row.title) };
     });
     writeFileSync(join(original, '.oboete.toml'), '[privacy]\nsecret_paths = ["secrets/**"]\n');
     await captureEndedSession(fixture, { sessionId: 'evidence-after', cwd: original, prompts: ['Explain the retry behavior.'] });
+    // Requests name nearby records by per-request alias (#329), so the memory is matched by its title,
+    // and outside the fetch, whose own assertion failure the provider path would catch.
+    let leaked = false;
     await observeAt(fixture, NOW + 31 * DAY, async (_url, options) => {
       const input = sentInput(options);
-      assert.ok(input.nearby.every((candidate) => candidate.id !== memoryId));
+      leaked ||= input.nearby.some((candidate) => candidate.title === memory.title);
       return openAiResponse(providerOutput(input.events[0].id));
     });
-    fixture.withDb((db) => assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memoryId)?.sensitivity, 'secret'));
+    assert.equal(leaked, false, 'the memory whose evidence path became secret is not sent');
+    fixture.withDb((db) => assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memory.id)?.sensitivity, 'secret'));
   });
 });
 
@@ -394,15 +398,17 @@ test('a nearby memory is rechecked before its body is included in a new request'
     fixture.withDb((db) => db.prepare("INSERT INTO memory_sources (memory_id, citation_kind, citation_value) VALUES (?, 'file_read', 'src/rotated-nearby-fixture-value.txt')").run(memoryId));
     fixture.env.OBOETE_OPENROUTER_API_KEY = 'rotated-nearby-fixture-value';
     await captureEndedSession(fixture, { sessionId: 'nearby-after', prompts: ['Explain the retry behavior.'] });
+    const title = fixture.withDb((db) => String(db.prepare('SELECT title FROM memories WHERE id = ?').get(memoryId)!.title));
     let calls = 0;
+    let leaked = false;
     await observeAt(fixture, NOW + 1_000, async (_url, options) => {
       calls += 1;
-      assert.ok(!String(options?.body).includes('rotated-nearby-fixture-value'));
       const input = sentInput(options);
-      assert.ok(input.nearby.every((candidate) => candidate.id !== memoryId));
+      leaked ||= String(options?.body).includes('rotated-nearby-fixture-value') || input.nearby.some((candidate) => candidate.title === title);
       return openAiResponse(providerOutput(input.events[0].id));
     });
     assert.equal(calls, 1);
+    assert.equal(leaked, false, 'the rechecked memory is not sent, not even without its body');
     fixture.withDb((db) => {
       assert.equal(db.prepare('SELECT sensitivity FROM memories WHERE id = ?').get(memoryId)?.sensitivity, 'secret');
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE memory_id = ? AND evidence IS NOT NULL').get(memoryId)?.n, 0);
