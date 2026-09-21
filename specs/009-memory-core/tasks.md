@@ -77,7 +77,7 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   `threshold` key retrieves exactly as one without it.
   2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
   false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
-  magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,661
+  magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,662
   passing (E18). The MMR leg is not: #272 reproduces a drop of a distinct fact once fifteen
   candidates rank above it, by probe rather than by a fixture corpus case, and `lambda` is
   unchanged. This task stays open for that leg, the way T042 stays open for its own.

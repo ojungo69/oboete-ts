@@ -2960,17 +2960,17 @@ rather than in intention. Everything below was run at `920bebee`, the revision t
 tests.
 
 - **The artifact runs.** `searchMemories returns the fact-bearing memory of a five-row corpus`
-  (`test/unit/retrieval.test.ts:864`) carries the five rows of the `claude-to-codex` pair of the
+  (`test/unit/retrieval.test.ts:866`) carries the five rows of the `claude-to-codex` pair of the
   `2026-09-17T15-05-08-894Z` dogfood run and is no longer skipped. It passes.
 - **Admission is still the index's own match.** `searchMemories still returns the fact-bearing
-  memory with a non-matching sixth row` (`:880`) adds a Japanese row that shares no trigram with the
+  memory with a non-matching sixth row` (`:883`) adds a Japanese row that shares no trigram with the
   English prompt and asserts both that `m_fact` is returned and that `m_unrelated` is not. Retiring
   a threshold did not turn retrieval into "return everything". `searchMemories omits an unrelated
   memory from a five-row corpus` (`:913`) is the same assertion at the size the acceptance names:
   the unrelated row takes `m_confirm`'s place rather than being added beside all five, because
   document count is what FTS5 computes its IDF from and #275 was a five-row corpus.
 - **The pack path, not only the query.** `buildPromptPack on the five-row receipt carries the three
-  fact strings through the trigram index` (`:977`) builds the real pack over the same five rows and
+  fact strings through the trigram index` (`:1035`) builds the real pack over the same five rows and
   asserts each fact string reaches its text — the pack path is where the dogfood run dropped the
   row, since it adds delivery filtering, retirement and the budget cut on top of the ranker. The
   same test pins the mechanism: `factRow.scoreTrigram` is not null and `factRow.viaLike` is false,
@@ -2984,7 +2984,7 @@ tests.
   rescaling of either index does not change rankCandidates selection`, and the `buildPromptPack`
   receipt. The mutation was reverted and the file is unchanged.
 - **The legacy key is inert.** `a config with the legacy threshold key retrieves the same as one
-  without` (`:954`) writes `[injection] threshold = 0.99` and compares results with a config that
+  without` (`:1012`) writes `[injection] threshold = 0.99` and compares results with a config that
   has none. `doctor reports a set injection.threshold as ignored` and `why still explains a
   historical below_threshold ledger row` keep the old ledger rows readable.
 - **Nothing else regressed.** `npm test` at this revision: 1,662 passing and 0 failing in the
