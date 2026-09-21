@@ -459,8 +459,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   #233 and #234 are recorded against the contract paragraphs that place them outside this task —
   a pre-existing pass-loop defect the resident inherits, two clock-and-retention findings from the
   delta reviews, and the post-release spawn hand-off the unconditional release leaves open.
-- T042 (open, 2026-09-21): the retained-history resource sweep is measured and recorded; the scale legs
-  and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
+- T042 (open, 2026-09-22): the retained-history resource sweep is measured and recorded at 1,000 and
+  10,000 events; the 100,000-event leg and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
   temporary home and reads only what the product writes or what the run itself started, in two phases: a replay of
   `test/fixtures/events-1000.jsonl` through the real hooks and 38 one-shot worker runs, then, against
   the resident worker, a hold of a read-only connection of at least 20 seconds (24.9 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
@@ -474,6 +474,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   session-start packs without `summary_pending` are reported, not gated, and belong to the timing work rather than this sweep.
   What the run cannot say is stated in the evidence file: a half-minute hold shows no long-run growth
   (#268), 1,051 events is not scale (#267), and `preset = "none"` exercises no provider at all.
+  The 10,000-event leg (same file, "10,000 events") passes the same four checks on both versions
+  after #332.
 - T040 (open, 2026-09-17): the macOS leg now runs on a GitHub-hosted `macos-15` runner through
   `.github/workflows/platform.yml` instead of the M1 iMac. Four runs are recorded in E10 of
   `quickstart.md`: they found a fail-open `secret_paths` defect through symbolic links (fixed in
