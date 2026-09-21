@@ -129,19 +129,26 @@ as in the 1,000-event run.
 - #332 scans them a chunk at a time through one reused buffer. On the kept database: reading it
   whole cost +49.0 MiB, one `Buffer.concat` per chunk +50.5 MiB, and the reused buffer +1.3 MiB.
   That fix is what both rows above measure.
-- The 24.x leg ran three times after #332. Two runs (v2, v3 on `64e16e5a`) ended with the harness's
-  own error, exit 2: a transient worker `ERR_SQLITE_ERROR` about 20 s before phase A ended had
-  spooled a session's opening prompts. Spool recovery bound them to a `late_source` span with no
-  work, as `contracts/work.md` requires, and the harness then waited for a `pending = 0` that no
-  run can reach without a work choice. That is #336. It changes what `doctor` and the harness count
-  as pending, and it logs the SQLite result code the error carried, which these logs do not have.
-- The third run is the row above. `c075b647` is `64e16e5a` plus that logging change to `errorCode()`,
-  made to name the error. No error occurred in it.
+- The 24.x leg ran three times after #332. Two of them (v2 and v3, on `64e16e5a`) ended with the
+  harness's own error, exit 2. In both, the resident worker logged `ERR_SQLITE_ERROR` and exited
+  `storage_error` during phase B's held-reader window, 3 s and 9 s into the hold. For about 2 s
+  after that, captures from the phase B sessions went to the spool.
+- The cause of that SQLite error is not identified: the logs carry only node:sqlite's generic code,
+  not the result code. It did not occur in the third 24.x run or in either 22.x run.
+- What made the run stop is separate and is #336. Spool recovery bound the spooled opening prompts
+  of a phase B session to a `late_source` span with no work, as `contracts/work.md` requires. The
+  harness then waited for a `pending = 0` that no run reaches without a work choice.
+- #336 counts such sources apart from `pending` and makes the harness report them, not wait on them.
+  It also logs the SQLite result code next to `ERR_SQLITE_ERROR`.
+- The third run is the row above. `c075b647` is `64e16e5a` plus that logging change to
+  `errorCode()`, made to name the error. No error occurred in it.
 
 ## What this run cannot say
 
 - **Long-run growth.** A half-minute hold cannot show it. The seven-day run is #268.
-- **Scale beyond 10,000.** The 100,000-event run is still #267: its line loop alone keeps the replay driver over the bound, because the fixture is held in memory.
+- **Scale beyond 10,000.** The 100,000-event run is not measured (#267). The replay driver holds
+  the whole fixture in memory. At 10,000 events its own peak during the line loop was 125,204 KiB,
+  so a tenfold fixture is expected to exceed the bound. That is a projection, not a measurement.
 - **A real summarizer.** With `preset = "none"` nothing is generated, so neither the provider's cost
   nor recall is exercised here.
 

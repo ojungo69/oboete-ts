@@ -162,8 +162,9 @@ Owner amendment, 2026-09-10:
   `docs/evidence/memory-core-2026-09/resource-sweep.md`): observed peak `VmHWM` 107.43 / 100.75 MiB across every process of the run against a
   150 MiB bound, the WAL growing under a held reader and recycling to 0 after the product's own stop path,
   no spool file at any sample, and every hook exiting 0. The 10,000-event leg passes every gated check on both
-  versions after #332 (peak 131.07 MiB on 22.x, 128.06 MiB on 24.x). Two further 24.x runs stopped on #336, a
-  transient storage error whose spooled sources the harness waited on. The 100,000-event leg is #267, the
+  versions after #332 (peak 131.07 MiB on 22.x, 128.06 MiB on 24.x). Two further 24.x runs stopped with a harness error: a worker
+  SQLite error of unidentified cause during phase B spooled captures, and the harness waited on sources awaiting a
+  work choice (#336). The 100,000-event leg is #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
   so the sweep runs with `[observer] preset = "none"` and reports SC-009 recall 0/40 rather than gating it.
 - [X] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.
