@@ -268,8 +268,10 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   not found.
 - `oboete why <session-id> [--turn N] [--json]` — injection ledger (included, omitted, trims,
   staleness, deferred deliveries, degraded sentence plus reason code); exit 1 if the session is not
-  in this repository. The report is bounded: at most 100 sources, at most 100 checkpoint decisions
-  with at most 50 source identifiers each, and at most 20 historical actions per source.
+  in this repository. Two of its sections are bounded: generation reports at most 100 sources, and
+  the checkpoint section at most 100 decisions with at most 50 source identifiers each and at most
+  20 historical actions per source. The injection ledger is not capped — every injection of the
+  session is listed with its items.
 - `oboete pause` / `oboete resume` — create or remove `~/.oboete/paused` without opening the
   database. Pause prints: "Capture and injection are paused. Run `oboete resume` to continue;
   existing memories are untouched." Exit 0.
@@ -335,11 +337,15 @@ end with no message. Compaction summary text is missing for Codex and for Grok B
 contracts carry the fact that a compaction happened and no summary, so the record is the event
 without its text. Claude and Pi supply both.
 
-A hook reads at most 256 KiB of the event on standard input, every time — replaying the same
-oversized event truncates it again. What is read becomes a partial capture: redacted, stored, and
-kept out of the summarizer, so the truncated text itself is never promoted into a memory. Its
-metadata is not withheld in the same way — the paths a readable prefix named can still reach a
-rule-based change record or a session summary — so treat the guarantee as one about the text.
+A hook keeps at most 256 KiB of the event from standard input — it reads one byte further only to
+know that there was more — and it does this on every invocation, so replaying an oversized event
+truncates it again. What happens to the retained prefix depends on it. If it is still valid JSON,
+capture takes the ordinary path and marks the row truncated. If it is not, the row is stored as a
+partial capture, whose truncated text is kept out of the summarizer and never promoted into a
+memory. If the session identifier itself fell beyond the prefix, nothing is stored at all and a
+counter is incremented instead. In the partial case the metadata is not withheld the way the text
+is — the paths a readable prefix named can still reach a rule-based change record or a session
+summary — so read the guarantee as one about the text.
 Repository rules in `.oboete.toml` are bounded too: at most 64 entries of at most 256 characters
 each.
 

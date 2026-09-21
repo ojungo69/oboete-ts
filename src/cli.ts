@@ -77,7 +77,8 @@ function usage(): string {
     'Reprocess retained source: oboete observe --reprocess-source <source-id>\n' +
     'Resident worker: oboete observe --resident   Stop it: oboete observe --stop\n' +
     'Use oboete why <session-id> [--turn N] [--json] to inspect source IDs and processing outcomes\n' +
-    '  (at most 100 sources and 100 checkpoint decisions, 50 source ids each).\n' +
+    '  (generation reports at most 100 sources and 100 checkpoint decisions, 50 source ids each;\n' +
+    '   the injection ledger is not capped).\n' +
     'Reads: search <query> [--limit 1-50] | timeline [--session <id>] | get <memory-id>, all with --json.\n' +
     'Setup: oboete setup [--agents <list>] [--provider <preset>] [--accept-egress] [--yes] [--remove] [--json]\n' +
     'Doctor: oboete doctor [--probe-provider] [--no-probe-agents] [--json]\n' +
