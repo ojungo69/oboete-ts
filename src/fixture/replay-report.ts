@@ -527,6 +527,7 @@ function reportJson(
     repoId: input.repoId,
     startSamples: input.startSamples,
     lines: input.lines.length,
+    settleMs: input.settleMs,
     ...timingJson(input, computed),
     secrets: { leaked: leakedSecrets, negativesUnredacted },
     directives: { leaked: leakedDirectives.length, rawRows: rawDirectiveRows },

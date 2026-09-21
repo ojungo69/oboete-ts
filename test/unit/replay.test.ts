@@ -370,6 +370,7 @@ test('renderer preserves the report sections, supplied bounds, and failure evide
 
   assert.equal(rendered.failed, true);
   assert.match(rendered.markdown, /Worker settle bound: 300000 ms per wait/);
+  assert.equal(rendered.json.settleMs, 300_000);
   assert.deepEqual(rendered.json.bounds, bounds);
   assert.deepEqual(rendered.json.hooks, { n: 1, failures: 1, pass: false });
   assert.deepEqual(rendered.markdown.match(/^### .+$/gm), [
