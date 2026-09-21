@@ -65,8 +65,8 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   first five), pinned in `test/unit/retrieval.test.ts`. Two misses were found after that: the
   small-corpus threshold drop #275, reproduced from the `2026-09-17T15-05-08-894Z` dogfood run (JST
   2026-09-18) as a five-row artifact in the same file, and the MMR depth drop #272, reproduced as a
-  fixture case in the same file. #275 is fixed and its artifact runs; #272 is the open leg, and its
-  artifact is the one still skipped. Acceptance: #275 fixed by retiring the admission threshold
+  fixture case in the same file. Both are fixed and both artifacts run (#275 in E18, #272 in E19).
+  Acceptance: #275 fixed by retiring the admission threshold
   (`.specify/bugs/small-corpus-threshold-drop/assessment.md`, 2026-09-20 decision, measured against two
   replacement gates); that artifact un-skipped and passing; the fixture pins still green; plus the pins the
   artifact alone does not give: a small-corpus false-positive case (an unrelated memory in a five-row corpus
@@ -76,7 +76,7 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   and — replacing the retired `threshold = 0.99` mutation, which guarded the mechanism being removed — a
   mutation that reintroduces magnitude-based exclusion, plus a pin that a config carrying the legacy
   `threshold` key retrieves exactly as one without it.
-  2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
+  2026-09-21, first of two entries (history): the #275 leg is closed and measured — the artifact runs unskipped, a five-row
   false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
   magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,663
   passing (E18). The MMR leg is not: #272 now has the fixture corpus case it asked for, bracketing
