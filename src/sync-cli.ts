@@ -9,8 +9,9 @@ import { ResolveError } from './sync/apply.js';
 import { initSpace, joinSpace, leaveSpace, mapRepo, pullSpace, pushSpace, resolveRow, showKey, withSpaceLock } from './sync/space.js';
 import { consentTupleOf, loadSyncConfig, SyncError, syncStatus } from './sync/status.js';
 
-const USAGE = 'Usage: oboete sync init <dir> [--classes eligible,local_only,private] [--json]\n' +
+const USAGE = 'Usage: oboete sync init <dir> [--classes ...] [--json]\n' +
   '       oboete sync join <dir> [--classes ...] [--json]      (the key line is typed on the terminal)\n' +
+  '       init and join both default to --classes eligible,local_only,private\n' +
   '       oboete sync key show\n' +
   '       oboete sync push [--republish] [--json]\n' +
   '       oboete sync pull [--json]\n' +

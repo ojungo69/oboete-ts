@@ -143,8 +143,8 @@ What setup writes, one line each:
   update; setup recognizes its own table without the markers and puts the block back.
 - Pi: the loader `~/.pi/agent/extensions/oboete.js`, which imports `piExtension` from the packed
   `pi-extension.mjs`. Setup writes that path only. If `PI_CODING_AGENT_DIR` points somewhere else,
-  setup refuses rather than writing to a directory Pi may not read; unset it, or copy the loader
-  into your own directory by hand.
+  setup refuses rather than writing to a directory Pi may not read, and it writes no loader at all
+  that run: unset the variable, run setup, and copy the loader it wrote if you need it elsewhere.
 
 The consent screen exists because a remote preset would send memory material off this machine.
 Setup prints the tuple it is bound to — preset, destination host, credential source, cost class,
@@ -385,10 +385,10 @@ with `> `).
 
 | Class | How it is reached | Where it may go |
 | --- | --- | --- |
-| `eligible` | A `local_only` row whose worker detector and entropy checks pass | Remote summarizer; local summarizer of the same repository; injection of the same repository; device sync |
+| `eligible` | A `local_only` row whose worker detector and entropy checks pass | Remote summarizer; local summarizer of the same repository; injection of the same repository; device sync when the space admits the class |
 | `local_only` | Default at capture | Local summarizer of the same repository; injection of the same repository; device sync when the space admits the class; never a remote summarizer until promotion |
 | `private` | Never promoted once set; import may carry it. Capture does not assign this class: `<private>` tags are stripped instead | Local summarizer of the same repository; injection of the same repository; device sync when the space admits the class; never a remote summarizer |
-| `secret` | Secretlint, gated entropy, a repository path rule in `.oboete.toml`, or a detector failure that fails closed | Nowhere. `isAllowed` returns false for every destination. The export file carries hashes only |
+| `secret` | Secretlint, gated entropy, a repository path rule in `.oboete.toml`, or a detector failure that fails closed | Nowhere. `isAllowed` returns false for every destination. The export file carries hashes only, and a sync bundle carries the row's identity hash and its `secret` floor with the text withheld, so your other machines can recognize the row without receiving it |
 
 **Secret detection before any write.** The hook runs the detector (private strip, path rules,
 `@secretlint/core` with the recommend preset, gated entropy, and the process's own credential
