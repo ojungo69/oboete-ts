@@ -2992,11 +2992,12 @@ tests.
   two `OBOETE_SYNC_HEAVY` bounds cases, and the #272 artifact described below, which is red by
   construction.
 
-What is not closed is the MMR leg, and it now has the corpus case #272 asked for. `a distinct fact
-behind fifteen candidates is not dropped as redundant` (`test/unit/retrieval.test.ts:940`) puts two
-distinct facts in closely matching words behind fifteen candidates with a budget a thousand times
-the corpus: the second is omitted as `mmr_redundant` while nothing is omitted as `budget`. At two,
-five and ten candidates the same pair is kept, so the depth is the trigger, exactly as #272
-describes. The test is committed skipped, the way the #275 artifact was, and the assessment of the
-fix is in `.specify/bugs/mmr-drops-distinct-facts/assessment.md`. T023 stays open for that leg, so
-this section closes one leg of the task and not the task.
+What is not closed is the MMR leg, and it now has the corpus case #272 asked for, in two halves.
+`two distinct facts in similar words survive a shallow candidate list`
+(`test/unit/retrieval.test.ts:965`) runs: the same pair behind two, five and ten candidates is kept.
+`a distinct fact behind fifteen candidates is not dropped as redundant` (`:973`) is the same pair at
+fifteen, where the second is omitted as `mmr_redundant` while nothing is omitted as `budget`; it is
+committed skipped, the way the #275 artifact was, so the depth is pinned from both sides rather than
+asserted here. The assessment of the fix — including the cosine measurements that ruled out a
+similarity cutoff — is a comment on #272, since `.specify/` is outside this repository by policy.
+T023 stays open for that leg, so this section closes one leg of the task and not the task.

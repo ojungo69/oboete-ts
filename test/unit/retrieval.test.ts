@@ -931,40 +931,48 @@ test('searchMemories omits an unrelated memory from a five-row corpus', async ()
   });
 });
 
-// Artifact for issue #272, RED until the rule is fixed. Two distinct facts in closely matching
-// words, behind fifteen candidates: at that depth the candidate's relevance, normalized to the
-// best RRF score, falls under its trigram similarity to the row already selected, and `mmrSelect`
-// rejects it outright instead of ranking it lower. The same shape is included at two, five and ten
-// candidates, so the depth is the trigger. The budget is a thousand times the corpus, so anything
-// omitted here was omitted by the rule.
+// The controls for issue #272: the same pair, shallow. These run — if a change to the rule ever
+// drops the pair at these depths, that is a regression here and not a surprise in the red case
+// below.
+function mmr272(depth: number) {
+  const ahead = Array.from({ length: depth }, (_, index) =>
+    row({
+      id: `ahead-${String(index).padStart(2, '0')}`,
+      title: `unrelated ${index}`,
+      body: `An unrelated note about subject number ${index} and nothing else.`,
+      // Lower is better: `ranksFor` sorts BM25 ascending, so these rank above the pair below.
+      scoreTrigram: -100 - index,
+    }));
+  const pair = [
+    row({ id: 'hooks', title: 'busy timeout', body: 'The busy timeout for hooks is 150 ms.', scoreTrigram: -2 }),
+    row({ id: 'cli', title: 'busy timeout', body: 'The busy timeout for the CLI is 2000 ms.', scoreTrigram: -1 }),
+  ];
+  return rankCandidates([...ahead, ...pair], { lambda: 0.5, budgetChars: 1_000_000, limit: 1_000 });
+}
+
+function assertPairKept(result: ReturnType<typeof mmr272>, depth: number): void {
+  assert.deepEqual(
+    result.omitted.filter((item) => item.reason === 'budget'),
+    [],
+    `the budget cut fired at depth ${depth}, so this case no longer isolates the MMR rule`,
+  );
+  assert.ok(
+    result.included.some((item) => item.id === 'cli'),
+    `at depth ${depth} the CLI fact was omitted as ${result.omitted.find((item) => item.id === 'cli')?.reason ?? 'absent'}`,
+  );
+}
+
+test('two distinct facts in similar words survive a shallow candidate list', () => {
+  for (const depth of [2, 5, 10]) assertPairKept(mmr272(depth), depth);
+});
+
+// Artifact for issue #272, RED until the rule is fixed. The same pair at depth fifteen: there the
+// candidate's relevance, normalized to the best RRF score, falls under its trigram similarity to
+// the row already selected, and `mmrSelect` rejects it outright instead of ranking it lower. The
+// depths above are the control, so what this pins is the depth, not the pair.
 test('a distinct fact behind fifteen candidates is not dropped as redundant',
   { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
-    // The shallow depths are part of the claim, not decoration: today they pass and fifteen fails,
-    // which is what makes depth the trigger rather than the pair itself.
-    for (const depth of [2, 5, 10, 15]) {
-      const ahead = Array.from({ length: depth }, (_, index) =>
-        row({
-          id: `ahead-${String(index).padStart(2, '0')}`,
-          title: `unrelated ${index}`,
-          body: `An unrelated note about subject number ${index} and nothing else.`,
-          // Lower is better: `ranksFor` sorts BM25 ascending, so these rank above the pair below.
-          scoreTrigram: -100 - index,
-        }));
-      const pair = [
-        row({ id: 'hooks', title: 'busy timeout', body: 'The busy timeout for hooks is 150 ms.', scoreTrigram: -2 }),
-        row({ id: 'cli', title: 'busy timeout', body: 'The busy timeout for the CLI is 2000 ms.', scoreTrigram: -1 }),
-      ];
-      const result = rankCandidates([...ahead, ...pair], { lambda: 0.5, budgetChars: 1_000_000, limit: 1_000 });
-      assert.deepEqual(
-        result.omitted.filter((item) => item.reason === 'budget'),
-        [],
-        `the budget cut fired at depth ${depth}, so this case no longer isolates the MMR rule`,
-      );
-      assert.ok(
-        result.included.some((item) => item.id === 'cli'),
-        `at depth ${depth} the CLI fact was omitted as ${result.omitted.find((item) => item.id === 'cli')?.reason ?? 'absent'}`,
-      );
-    }
+    assertPairKept(mmr272(15), 15);
   });
 
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
