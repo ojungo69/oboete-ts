@@ -931,6 +931,38 @@ test('searchMemories omits an unrelated memory from a five-row corpus', async ()
   });
 });
 
+// Artifact for issue #272, RED until the rule is fixed. Two distinct facts in closely matching
+// words, behind fifteen candidates: at that depth the candidate's relevance, normalized to the
+// best RRF score, falls under its trigram similarity to the row already selected, and `mmrSelect`
+// rejects it outright instead of ranking it lower. The same shape is included at two, five and ten
+// candidates, so the depth is the trigger. The budget is a thousand times the corpus, so anything
+// omitted here was omitted by the rule.
+test('a distinct fact behind fifteen candidates is not dropped as redundant',
+  { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
+    const ahead = Array.from({ length: 15 }, (_, index) =>
+      row({
+        id: `ahead-${String(index).padStart(2, '0')}`,
+        title: `unrelated ${index}`,
+        body: `An unrelated note about subject number ${index} and nothing else.`,
+        // Lower is better: `ranksFor` sorts BM25 ascending, so these rank above the pair below.
+        scoreTrigram: -100 - index,
+      }));
+    const pair = [
+      row({ id: 'hooks', title: 'busy timeout', body: 'The busy timeout for hooks is 150 ms.', scoreTrigram: -2 }),
+      row({ id: 'cli', title: 'busy timeout', body: 'The busy timeout for the CLI is 2000 ms.', scoreTrigram: -1 }),
+    ];
+    const result = rankCandidates([...ahead, ...pair], { lambda: 0.5, budgetChars: 1_000_000, limit: 1_000 });
+    assert.deepEqual(
+      result.omitted.filter((item) => item.reason === 'budget'),
+      [],
+      'the budget cut fired, so this case no longer isolates the MMR rule',
+    );
+    assert.ok(
+      result.included.some((item) => item.id === 'cli'),
+      `the CLI fact was omitted as ${result.omitted.find((item) => item.id === 'cli')?.reason ?? 'absent'}`,
+    );
+  });
+
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {
   // Distinct bodies, or MMR drops b and c as duplicates of a and the comparison below is between
   // two one-element lists, which no rescaling could change.
