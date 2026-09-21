@@ -295,8 +295,10 @@ test('runAgentCli aborts a child at its timeout', async () => {
 });
 
 test('runAgentCli inherits the login environment without forwarding oboete credentials', async () => {
-  const previous = process.env.OBOETE_NIM_API_KEY;
-  process.env.OBOETE_NIM_API_KEY = 'do-not-forward';
+  // A known preset key, a key and a token this build has no preset for, and the account id (FR-016).
+  const names = ['OBOETE_NIM_API_KEY', 'OBOETE_FUTURE_API_KEY', 'OBOETE_FUTURE_API_TOKEN', 'OBOETE_CF_ACCOUNT_ID'];
+  const previous = names.map((name) => process.env[name]);
+  for (const name of names) process.env[name] = 'do-not-forward';
   let seen: SpawnCall | undefined;
   try {
     const result = await runAgentCli('claude', 'observer prompt', {
@@ -307,11 +309,13 @@ test('runAgentCli inherits the login environment without forwarding oboete crede
       }),
     });
     assert.deepEqual(result, { text: 'model text' });
-    assert.equal(seen?.env?.OBOETE_NIM_API_KEY, undefined);
+    for (const name of names) assert.equal(seen?.env?.[name], undefined, name);
     assert.equal(seen?.env?.PATH, process.env.PATH);
   } finally {
-    if (previous === undefined) delete process.env.OBOETE_NIM_API_KEY;
-    else process.env.OBOETE_NIM_API_KEY = previous;
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
   }
 });
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { CAPTURE_DEADLINE_MS } from '../capture.js';
 import type { openDatabase } from '../db/open.js';
+import { CACHE_KEY as CATALOG_CACHE_KEY } from '../observer/catalog.js';
 import type { oboetePaths } from '../paths.js';
 import { isAllowed, loadDestinationRules, type Sensitivity } from '../privacy/egress.js';
 import { PENDING_BOUND_MS, READY_BOUND_MS, fileBytes, ms, pendingSentence, percentile, recallRateOf, renderReport, statusOf, timingRows, type BoundRow } from './replay-report.js';
@@ -229,21 +230,43 @@ function maxMs(samples: Sample[]): number {
   return samples.length === 0 ? 0 : Math.max(...samples.map((sample) => sample.ms));
 }
 
+/**
+ * Whether any string cell of any table holds the value, except the Workers AI catalog cache row,
+ * which stores the account id by design (`src/observer/catalog.ts`). Read by rows, never whole.
+ */
+function storedOutsideCatalog(db: ReturnType<typeof openDatabase>['db'], value: string): boolean {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+  for (const { name } of tables) {
+    for (const row of db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).iterate() as Iterable<Record<string, unknown>>) {
+      if (name === 'runtime_state' && row.key === CATALOG_CACHE_KEY) continue;
+      if (Object.values(row).some((cell) => typeof cell === 'string' && cell.includes(value))) return true;
+    }
+  }
+  return false;
+}
+
 /** SC-005 and FR-021: no planted secret reaches a written surface, no directive reaches a memory. */
 function privacyChecks(
   db: ReturnType<typeof openDatabase>['db'],
   paths: ReturnType<typeof oboetePaths>,
-  input: { maps: MeasureInput['maps']; packBlob: string },
+  input: { maps: MeasureInput['maps']; packBlob: string; credentials: MeasureInput['credentials'] },
 ): { leakedSecrets: string[]; leakedDirectives: string[]; negativesUnredacted: number; rawDirectiveRows: number } {
   // Every file this run wrote, and the packs it delivered, so a leaked secret is found wherever it landed.
+  const extraFiles = walkFiles(paths.spool).concat(walkFiles(paths.logs));
   const written = [paths.db, `${paths.db}-wal`, `${paths.db}-shm`]
     .filter((path) => existsSync(path))
-    .concat(walkFiles(paths.spool), walkFiles(paths.logs));
+    .concat(extraFiles);
   const inFiles = secretsInFiles(written, input.maps.secretValues);
   const packBytes = Buffer.from(input.packBlob, 'utf8');
-  const leakedSecrets = input.maps.secretValues
-    .filter((row) => row.secret !== '' && (inFiles.has(row.id) || packBytes.includes(Buffer.from(row.secret, 'utf8'))))
-    .map((row) => row.id);
+  const inPack = (secret: string): boolean => packBytes.includes(Buffer.from(secret, 'utf8'));
+  // --pass-credentials (#328): the account id is looked for in the database by value, not by bytes,
+  // so the catalog cache that holds it by design is the only place it may be.
+  const { accountIds, inOutput } = input.credentials;
+  const accountInFiles = secretsInFiles(extraFiles, accountIds);
+  const leakedSecrets = [
+    ...input.maps.secretValues.filter((row) => row.secret !== '' && (inFiles.has(row.id) || inPack(row.secret))),
+    ...accountIds.filter((row) => accountInFiles.has(row.id) || inPack(row.secret) || storedOutsideCatalog(db, row.secret)),
+  ].map((row) => row.id).concat(inOutput > 0 ? ['credential:child-output'] : []);
 
   const memoryRows = db.prepare('SELECT title AS title, body AS body FROM memories').all() as {
     title: unknown;
@@ -496,7 +519,7 @@ function computeReport(
   const { db } = opened;
   const counts = dbCounts(db, paths, input);
   const packBlob = input.packs.map((pack) => pack.text).join('\n');
-  const privacy = privacyChecks(db, paths, { maps: input.maps, packBlob });
+  const privacy = privacyChecks(db, paths, { maps: input.maps, packBlob, credentials: input.credentials });
   const recall = recallTally(db, input);
   const lifecycle = lifecycleReport(db, input);
   const compactionSummaries = compactionRows(db, input.repoId);

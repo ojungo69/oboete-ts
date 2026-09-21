@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { PRESET_CATALOG, readCredentials } from '../config.js';
 import { runtimeStateGet, runtimeStateSet } from '../worker/purge.js';
 
-const CACHE_KEY = 'workers_ai_catalog';
+export const CACHE_KEY = 'workers_ai_catalog';
 export const CACHE_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 20;
