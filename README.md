@@ -9,10 +9,11 @@ knows: a pack is sized from an estimate of the model's context window, five perc
 default (`[injection] context_fraction`, up to 0.5), with a further cap of 10,000 characters for
 Claude and Grok. It skips what this conversation already received in the current context epoch,
 so a compaction lets a memory come back. A related memory that was injected once and left
-untouched for ninety days stops being offered; one that was never injected stays a candidate, and
-a pinned memory or the current checkpoint is delivered regardless. Retirement is about the prompt,
-not the store — a retired memory is still there, and `oboete search`, `oboete get` and
-`oboete why` still find it. All four agents share one SQLite store; the
+untouched for ninety days stops being offered; one that was never injected stays a candidate. The
+session-start pack draws its pinned memories and its checkpoint from a different path, which
+retirement does not filter — though budget, privacy and duplicate checks still apply there, so
+selection is eligibility, not a promise. Retirement is about the prompt, not the store — a retired
+memory is still there, and `oboete search`, `oboete get` and `oboete why` still find it. All four agents share one SQLite store; the
 boundaries are sensitivity and repository, never which agent produced a memory. There is no
 subscription: capture and lexical search work with zero credentials, and a remote summarizer is
 optional after an explicit consent screen.
@@ -292,9 +293,9 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   `--map-project-hash` do the same for the other entities; each mapping list holds at most 1,000
   entries. Limits differ by format: 64 KiB per line for v1, 4 MiB per line for v2, 256 MiB per
   native file, and 5 MiB with at most 20,000 records for a claude-mem file. A secret row that
-  carries text or concepts is refused; format 1 also requires its sources to be empty, while
-  format 2 accepts the redacted source records that carry hashes and relationships only. Exit 2 on
-  an invalid file.
+  carries text or concepts is refused, and so is a source attached to it that carries evidence, a
+  citation value, a capture root, source paths or a producing agent; a redacted source record,
+  which holds hashes and relationships only, travels in either format. Exit 2 on an invalid file.
 - `oboete import promote <migration-record-id> --work <local-work-id>` / `oboete import promote
   --list` — promotes one imported **sharing proposal** that local classification has cleared,
   creating a pending proposal for you to approve; it is not a way to release arbitrary quarantined
@@ -538,9 +539,9 @@ append-only evidence lives in [docs/evidence/m1-dogfood.md](docs/evidence/m1-dog
 
 Implemented and verified here is not the same as qualified. At this version:
 
-- **Agent coverage is uneven.** Codex records a turn end without the final assistant message, and
-  records that a compaction happened without its summary text, because its hooks are not given
-  either. Claude, Grok and Pi supply both.
+- **Agent coverage is uneven.** Codex records a turn end without the final assistant message,
+  because its hook is not given one. Compaction summary text is missing for both Codex and Grok
+  Build, whose contracts carry the event without a summary field. Claude and Pi supply both.
 - **Ordered multi-agent continuation is covered synthetically.** The hand-off between two agents is
   exercised by generated pairs rather than by two native agents running in sequence (#265).
 - **Recall against a real summarizer is not measured.** The evaluation runs with no provider, so
