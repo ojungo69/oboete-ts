@@ -105,6 +105,12 @@ function bundleDigest() {
     return hash.digest('hex').slice(0, 16);
   } catch { return 'unknown'; }
 }
+// The digest is of the content, so a bundle replaced during the run and put back before the end
+// compares equal to the one that started. Every write leaves its own timestamp and length, so the
+// pair says whether these are the files the run began with, not merely files that match them.
+function bundleIdentity() {
+  try { return [BUNDLE, ENGINE].map((file) => { const s = statSync(file); return `${s.mtimeMs}:${s.size}`; }).join(' '); } catch { return 'unknown'; }
+}
 function loadAverage() { try { return readFileSync('/proc/loadavg', 'utf8').trim(); } catch { return 'unavailable'; } }
 // A file that is not there yet is zero bytes; a file this run may not read is not, and reporting it
 // as zero would read as a WAL the checkpoint had recycled.
@@ -997,7 +1003,7 @@ function buildBundles() {
 // The commit is taken before the build, and checked again once the measuring is done: HEAD can move
 // under a run that takes several minutes, and a receipt naming the revision the tree happened to be
 // on at the end would not be a receipt of the bundle that ran.
-function requireSameRevision(commit, digest) {
+function requireSameRevision(commit, { digest, identity }) {
   requireCleanTree();
   const now = gitHead();
   if (now !== commit) throw new HarnessError(`HEAD moved from ${commit} to ${now} during the run, so the bundle measured is not this revision's`);
@@ -1005,6 +1011,8 @@ function requireSameRevision(commit, digest) {
   // different children running different code with nothing in the receipt to show it.
   const built = bundleDigest();
   if (built !== digest) throw new HarnessError(`the bundle changed from ${digest} to ${built} during the run, so its children did not all run the same code`);
+  const now2 = bundleIdentity();
+  if (now2 !== identity) throw new HarnessError(`the bundle files were rewritten during the run (${identity} became ${now2}), so a child may have loaded something else even though the content matches now`);
 }
 function requireInputs(cli) {
   // Counted here rather than beside the report: this runs inside the try, so a fixture that is a
@@ -1021,7 +1029,7 @@ function requireInputs(cli) {
   for (const file of [BUNDLE, ENGINE]) {
     if (!existsSync(file)) throw new HarnessError(`the build produced no ${file}`);
   }
-  return { lines, commit, digest: bundleDigest() };
+  return { lines, commit, digest: bundleDigest(), identity: bundleIdentity() };
 }
 // `root` is created by the caller, so a failure part way through still leaves it a home to keep and
 // a path to print.
@@ -1049,13 +1057,13 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
-  let fixtureLines = 0, commit = 'unknown', digest = 'unknown';
+  let fixtureLines = 0, commit = 'unknown', digest = 'unknown', identity;
   let priorIds, priorFailed, priorDeadline;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
-    ({ lines: fixtureLines, commit, digest } = requireInputs(cli));
+    ({ lines: fixtureLines, commit, digest, identity } = requireInputs(cli));
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = prepareIsolation(isolation);
     const env = childEnv(paths);
@@ -1070,7 +1078,7 @@ async function runLive(cli) {
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
-    requireSameRevision(commit, digest);
+    requireSameRevision(commit, { digest, identity });
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
