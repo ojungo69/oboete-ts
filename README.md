@@ -41,10 +41,9 @@ The previous implementation is preserved under [`legacy/`](legacy/README.md) as 
 
 ## Shape
 
-- One SQLite file, `~/.oboete/memory.db`, is the product. Nothing is served over a socket: the
-  only port oboete ever binds is the loopback port of `oboete view` while that command runs in the
-  foreground, and `oboete mcp` speaks JSON-RPC over the standard streams of the agent that started
-  it.
+- One SQLite file, `~/.oboete/memory.db`, is the product. Nothing runs as a service: `oboete view`
+  serves HTTP on a loopback port, and only while that command runs in the foreground, and `oboete
+  mcp` speaks JSON-RPC over the standard streams of the agent that started it.
 - Summarization runs in a detached worker. By default that worker stays resident between hooks and
   exits after fifteen minutes idle (`[worker] resident`, `idle_exit_ms`). `oboete observe
   --resident` starts one by hand, `oboete observe --stop` ends it, and a plain `oboete observe`
