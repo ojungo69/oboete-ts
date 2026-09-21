@@ -23,6 +23,9 @@ test('the bulk generator adds filler only and is deterministic', async () => {
   const { generate } = await import('../fixtures/generate-1000-events.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oboete-bulk-'));
   try {
+    const committed = path.join(ROOT, 'test/fixtures/events-1000.jsonl');
+    const standard = generate({ out: path.join(dir, 'standard.jsonl') });
+    assert.ok(fs.readFileSync(standard.path).equals(fs.readFileSync(committed)), 'the default no longer writes the committed fixture');
     const first = generate({ target: 2000, out: path.join(dir, 'a.jsonl') });
     generate({ target: 2000, out: path.join(dir, 'b.jsonl') });
     const body = fs.readFileSync(first.path, 'utf8');
