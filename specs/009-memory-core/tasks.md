@@ -150,7 +150,12 @@ Owner amendment, 2026-09-10:
   security review replaces the B4 report, whose draft no longer exists; it found one defect, fixed
   in #310, and left #311, #312 and #313 open. The cross-slice review filed #314, #315, #316 and
   #317, and the over-engineering pass over the whole feature filed #321. #310 is merged.
-- [ ] T044 Update `README.md` and user-facing help with only verified capabilities and remaining limitations.
+- [X] T044 Update `README.md` and user-facing help with only verified capabilities and remaining limitations.
+  Status: merged as #320 at `32edb651`. The rewrite covers the README's status, shape, requirements,
+  install, setup, doctor, command, privacy and degraded-mode sections, adds `## Current limitations`,
+  and rewrites the help of `cli`, `sync-cli`, `observe` and `fixture/replay`. Every review round
+  found claims the source did not support, and every one of them was checked against the constant,
+  bound or branch that decides it before the text changed. See E16 in `quickstart.md`.
 - [ ] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
 
 ## Dependencies and implementation strategy
