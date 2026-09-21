@@ -143,7 +143,8 @@ Owner amendment, 2026-09-10:
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
   so the sweep runs with `[observer] preset = "none"` and reports SC-009 recall 0/40 rather than gating it.
 - [X] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.
-  Status: run on 2026-09-21 against `e19acd8e`; see `quickstart.md` E15. Typecheck, lint, build,
+  Status: run on 2026-09-21 against `9397a85a`, the merge of #310; see `quickstart.md` E15, which
+  also records the first run against `e19acd8e`. Typecheck, lint, build,
   the 1,663-test suite and pack-check all pass on Node 24.16.0 and 22.23.1, and semgrep reports
   nothing over `src` and `scripts` with 458 rules unavailable outside its Pro engine. The scoped
   security review replaces the B4 report, whose draft no longer exists; it found one defect, fixed

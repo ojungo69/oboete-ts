@@ -2840,17 +2840,31 @@ become unexportable (#315); `oboete why` builds its scope without a work, so a w
 back empty instead of out of scope (#316); and the Pi tool wrappers forward no work binding, so a
 checkpoint delivered by injection cannot be fetched back (#317).
 
-### Deliberate simplifications
+### Over-engineering pass
 
-Fifteen `ponytail:` comments in `src/` name a ceiling and the condition that would raise it — a
-quadratic prefix parse in `setup/managed-block.ts`, per-row scans in `sync/capture.ts` and
-`sync/apply.ts`, the 50-row and 2 MiB provenance bound in `transfer-claude-mem.ts`, the 50-row
-listing cap in `db/queries.ts`, and the rest. They are inventoried here as accepted debt with a
-named trigger, not as open defects.
+`ponytail-review` was run twice: over each change this checkpoint produced, before it was
+committed, and once over the whole 009 surface (`590c0a2f..9397a85a`) with the same lens — what
+could be deleted or collapsed without losing behaviour. The cohesive pass found five items, about
+110 lines, all of them dead or single-use code the 009 migrations left behind: a privacy helper
+and a pair of session getters that only their own tests still reach, an unreachable `'summary'`
+label variant in the injection pack, three unreferenced sync declarations, and a wrapper that
+copies a structure for one call. They are advisory, none is a defect, and they are filed as #321
+rather than applied here, so that this checkpoint stays a record of verification rather than a
+refactor.
+
+Separately, fifteen `ponytail:` comments in `src/` name a ceiling and the condition that would
+raise it — a quadratic prefix parse in `setup/managed-block.ts`, per-row scans in
+`sync/capture.ts` and `sync/apply.ts`, the 50-row and 2 MiB provenance bound in
+`transfer-claude-mem.ts`, the 50-row listing cap in `db/queries.ts`, and the rest. They are
+accepted debt with a named trigger, not open defects.
 
 ### What this checkpoint does not close
 
-T043 covers the assembled feature as it stands at `e19acd8e` plus #310, which is merged. It does not close T024 or
+T043 covers the assembled feature as it stands at `9397a85a`, the merge of #310. What it records
+is a verification, and the shape of each pass is stated where it is reported: the correctness
+review is a seams review rather than a re-reading of 29,800 lines that no reviewer converges on,
+the security review names its scope and its exclusions, and the over-engineering pass is recorded
+above with its findings filed. Nothing here is a claim that a whole-range line review was run. It does not close T024 or
 T041, whose legs are deferred by owner decision, and it does not revisit T042's outstanding legs
 (#267, #268). The seven issues above are the work it found; none of them blocks the milestone, and
 each is recorded where the code is rather than only here.
