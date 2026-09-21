@@ -2956,7 +2956,7 @@ record iterators it means were extracted to `src/transfer-records.ts` and are im
 
 T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
 rather than tuning it, and this section is the check that the list is now satisfied in the code
-rather than in intention. Everything below was run at `7cff6571`, the revision that carries these
+rather than in intention. Everything below was run at `0fdd42ac`, the revision that carries these
 tests. Each receipt is named by its test rather than by a line number, which moves with every edit
 to that file.
 
