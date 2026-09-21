@@ -628,14 +628,14 @@ type ReplayPlan = {
  * record has to match its configuration: the worker's Workers AI catalog refresh checks only that
  * credentials are present (#333), so the replay must not hand them over without consent.
  */
-export function passCredentialsRefusal(home: string, env: NodeJS.ProcessEnv = process.env): string | null {
+function passCredentialsRefusal(home: string): string | null {
   let config;
   try {
     config = loadConfig(oboetePaths(home));
   } catch (error) {
     return `--pass-credentials: the configuration in ${home} cannot be read (${error instanceof Error ? error.message : String(error)})`;
   }
-  if (consentMatches(config, env)) return null;
+  if (consentMatches(config, process.env)) return null;
   return `--pass-credentials: the consent record in ${home} does not match its ${config.observer.preset} configuration, so the credentials are not passed`;
 }
 
