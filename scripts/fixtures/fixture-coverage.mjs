@@ -299,11 +299,11 @@ function coverage(events, secrets, directives) {
   };
 }
 
-function assertAgentCoverage(report, problems) {
-  if (report.total < 1000) problems.push(`only ${report.total} events`);
+function assertAgentCoverage(report, problems, target) {
+  if (report.total < target) problems.push(`only ${report.total} events`);
   for (const agent of AGENTS) {
     const n = report.byAgent[agent] ?? 0;
-    if (n < 240) problems.push(`${agent} has ${n} events`);
+    if (n < target * 0.24) problems.push(`${agent} has ${n} events`);
   }
 }
 
@@ -513,10 +513,10 @@ function coverageTurnsBySession(events, problems) {
   return turnsBySession;
 }
 
-function assertCoverage(events, secrets, directives, body) {
+function assertCoverage(events, secrets, directives, body, target = 1000) {
   const report = coverage(events, secrets, directives);
   const problems = [];
-  assertAgentCoverage(report, problems);
+  assertAgentCoverage(report, problems, target);
   assertCorpusCoverage(report, problems);
   assertLifecycleCoverage(report, problems);
   assertSizeCoverage(report, problems);
