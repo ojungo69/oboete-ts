@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { PRESET_CATALOG, type Credentials } from '../../src/config.js';
-import { MAX_OBSERVATIONS, type ObserverInput, type ObserverOutput } from '../../src/observer/contract.js';
+import { MAX_OBSERVATIONS, observerOutputJsonSchema, type ObserverInput, type ObserverOutput } from '../../src/observer/contract.js';
 import { buildSummarizerPrompt, summarizeWithProvider } from '../../src/observer/llm.js';
 import { cliSpawn } from '../helpers/agent-cli.js';
 
@@ -226,6 +226,37 @@ test('schema success returns validated output, model id, attempts, and header ne
   assert.equal(responseFormat?.type, 'json_schema');
   assert.equal(typeof responseFormat?.json_schema, 'object');
   assert.deepEqual(requestBody?.chat_template_kwargs, { enable_thinking: false }, 'thinking is off for the observer call');
+});
+
+// `json_object` guarantees valid JSON, not the observer's JSON, so the schema has to travel in the
+// prompt. Without it a local model answered with keys of its own and every call failed validation.
+test('a json_object preset sends the observer schema in its system prompt', async (t) => {
+  const schema = JSON.stringify(observerOutputJsonSchema);
+  const cases = [
+    { preset: 'openrouter', credentials: apiCredentials(), schemaInPrompt: true },
+    { preset: 'ollama', credentials: { kind: 'none', present: true, source: 'none', values: {} }, schemaInPrompt: true },
+    {
+      preset: 'workers-ai',
+      credentials: { kind: 'cloudflare', present: true, source: 'test', values: { accountId: 'account-123', token: 'test-token' } },
+      // The schema is in response_format, where the API enforces it.
+      schemaInPrompt: false,
+    },
+  ] as const;
+  for (const { preset, credentials, schemaInPrompt } of cases) {
+    await t.test(preset, async () => {
+      let requestBody: Record<string, unknown> | undefined;
+      const scripted = scriptedFetch(async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return preset === 'workers-ai' ? workersResponse(output(), {}) : openAiResponse(JSON.stringify(output()));
+      });
+      const result = await summarizeWithProvider(INPUT, httpHarness(scripted.fetch, { preset, credentials }).ctx);
+      assert.equal(result.ok, true);
+      const messages = requestBody?.messages as { role: string; content: string }[] | undefined;
+      const system = messages?.find((message) => message.role === 'system')?.content ?? '';
+      assert.equal(system.includes(schema), schemaInPrompt);
+      if (preset === 'ollama') assert.equal(requestBody?.reasoning_effort, 'none', 'thinking is off for the observer call');
+    });
+  }
 });
 
 test('neurons fall back to separate input and output token rates', async () => {
