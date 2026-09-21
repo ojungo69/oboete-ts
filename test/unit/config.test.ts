@@ -594,7 +594,7 @@ test('the preset catalog matches the contract and the R13 provider probe', () =>
       costClass: 'local',
       egress: 'local',
       defaultModel: '',
-      structuredOutput: 'response_format',
+      structuredOutput: 'json_schema',
       capped: false,
     },
     nim: {

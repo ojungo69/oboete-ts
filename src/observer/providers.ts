@@ -140,6 +140,9 @@ export async function createLanguageModel(
   const provider = createOpenAICompatible({
     name: preset,
     baseURL: PRESET_CATALOG[preset].baseUrl,
+    // Without it the SDK warns on every call that a response_format schema is unsupported, although
+    // the provider options below send one and Ollama enforces it.
+    supportsStructuredOutputs: PRESET_CATALOG[preset].structuredOutput === 'json_schema',
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
@@ -157,7 +160,7 @@ export function providerRequestOptions(preset: PresetName): RequestOptions {
     return {
       structured,
       providerOptions: {
-        'workers-ai': {
+        [preset]: {
           response_format: {
             type: 'json_schema',
             json_schema: { name: 'observer_output', schema: observerOutputJsonSchema },
@@ -166,7 +169,12 @@ export function providerRequestOptions(preset: PresetName): RequestOptions {
           // default model spent 25-45 s and 1,600-3,700 completion tokens (60-136 neurons) on a
           // one-event probe and the worker's 60 s deadline turned into fallback summaries; with it
           // off the same call took 1.4 s, 122 tokens, 5.7 neurons (isolated account, 2026-09-06).
-          chat_template_kwargs: { enable_thinking: false },
+          // On Ollama a thinking model spent about 1,000 tokens on a one-line prompt; its /v1
+          // ignores `think: false` and honours `reasoning_effort: none`, which the SDK sends for
+          // `reasoningEffort`, and a non-thinking model accepts it (0.34.2, 2026-09-21).
+          ...(preset === 'workers-ai'
+            ? { chat_template_kwargs: { enable_thinking: false } }
+            : { reasoningEffort: 'none' }),
         },
       },
     };
@@ -175,14 +183,7 @@ export function providerRequestOptions(preset: PresetName): RequestOptions {
     return {
       structured,
       providerOptions: {
-        [preset]: {
-          response_format: { type: 'json_object' },
-          // Same reason as `enable_thinking` above: a thinking model on Ollama spent about 1,000
-          // tokens on a one-line prompt and the doctor probe timed out. Ollama's /v1 ignores
-          // `think: false` and honours `reasoning_effort: none`, which the SDK sends for this key; a
-          // non-thinking model accepts it (0.34.2, 2026-09-21).
-          ...(preset === 'ollama' ? { reasoningEffort: 'none' } : {}),
-        },
+        [preset]: { response_format: { type: 'json_object' } },
       },
     };
   }

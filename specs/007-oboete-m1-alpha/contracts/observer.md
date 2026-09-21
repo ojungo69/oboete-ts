@@ -166,12 +166,14 @@ folded into the last one.
 | preset | package | endpoint | credential | cost class | structured output |
 |---|---|---|---|---|---|
 | `workers-ai` (default) | `workers-ai-provider` REST | `.../accounts/<id>/ai/run/@cf/zai-org/glm-4.7-flash` | `OBOETE_CF_API_TOKEN` + `OBOETE_CF_ACCOUNT_ID` | free tier, ~45 neurons per call | JSON schema (verified live) |
-| `ollama` | `@ai-sdk/openai-compatible` | `http://127.0.0.1:11434/v1` | none | local | `response_format` |
+| `ollama` | `@ai-sdk/openai-compatible` | `http://127.0.0.1:11434/v1` | none | local | JSON schema, grammar-constrained by Ollama; thinking off (`reasoning_effort: none`) |
 | `nim`, `openrouter`, `gemini` | `@ai-sdk/openai-compatible` | provider base URL | `OBOETE_<PRESET>_API_KEY` (`OBOETE_NIM_API_KEY`, `OBOETE_OPENROUTER_API_KEY`, `OBOETE_GEMINI_API_KEY`) | remote | `response_format` where the R13 probe confirms it, else text-JSON |
 | `agent-cli` (optional) | child process: `claude -p --output-format json`, `codex exec --json`, or `grok -p --output-format json` | none (the CLI's own login) | own subscription, shown on the consent screen | text-JSON; exempt from the 150-call cap; headless JSON output per CLI is an R13 probe and a failure only disables this preset |
 
 Text-JSON path: the prompt asks for exactly one JSON object; the reply is parsed and validated with
-the same zod schema; failure counts as `unusable_output`.
+the same zod schema; failure counts as `unusable_output`. A `response_format` preset sends
+`{type: json_object}`, which guarantees JSON but not this JSON, so its prompt carries the schema the
+same way; only the JSON-schema presets leave it out of the prompt, because the request carries it.
 
 ## Call policy
 

@@ -162,8 +162,16 @@ test('providerRequestOptions follows the preset structured-output policy', () =>
     providerOptions: { openrouter: { response_format: { type: 'json_object' } } },
   });
   assert.deepEqual(providerRequestOptions('ollama'), {
-    structured: 'response_format',
-    providerOptions: { ollama: { response_format: { type: 'json_object' }, reasoningEffort: 'none' } },
+    structured: 'json_schema',
+    providerOptions: {
+      ollama: {
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'observer_output', schema: observerOutputJsonSchema },
+        },
+        reasoningEffort: 'none',
+      },
+    },
   });
   for (const preset of ['nim', 'gemini', 'agent-cli'] as const) {
     assert.deepEqual(providerRequestOptions(preset), { structured: 'text-json' });
