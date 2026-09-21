@@ -381,6 +381,7 @@ export function generationItem(db: DatabaseSync | null, integrityFailed: boolean
     'The database is unavailable, so source processing could not be verified.',
     'Generation progress is unknown.', '`oboete doctor` after storage is repaired.');
   const counts = { pending: 0, waiting: 0, parked: 0, processed: 0, legacy_unknown: 0, excluded: 0, partial: 0, recovered: 0, awaiting: 0 };
+  let unbound = 0;
   const rows = db.prepare(`SELECT ${SOURCE_METADATA_COLUMNS}, (${RESOLVED_WORK_SQL}) AS work_resolved, EXISTS (
     SELECT 1 FROM observation_batch_sources s WHERE s.raw_event_id = raw_events.id
       AND s.outcome IN ('deferred', 'rejected', 'uncovered') AND s.reason IS NOT 'not_sent'
@@ -388,7 +389,10 @@ export function generationItem(db: DatabaseSync | null, integrityFailed: boolean
   for (const stored of rows.iterate()) {
     const row = stored as unknown as RawEventRow;
     // #336: SQL IN can be NULL for an unbound source; only 1 proves resolved work.
-    if (row.processing_state === 'pending' && stored.work_resolved !== 1) counts.awaiting += 1;
+    if (row.processing_state === 'pending' && stored.work_resolved !== 1) {
+      counts.awaiting += 1;
+      if (row.work_binding_id === null) unbound += 1;
+    }
     else if (row.processing_state === 'waiting' && row.retry_after === null) counts.parked += 1;
     else counts[row.processing_state ?? 'pending'] += 1;
     if (row.classification_state === 'partial') counts.partial += 1;
@@ -403,7 +407,8 @@ export function generationItem(db: DatabaseSync | null, integrityFailed: boolean
   return describe('generation', reason,
     'Temporary guidance may be available while accepted information is still unprocessed.',
     '`oboete observe` processes due work; `oboete why <session-id>` explains source outcomes. Incomplete captures need the original complete input; legacy sources require explicit reprocessing.' +
-    (counts.awaiting > 0 ? ' Use `oboete work status` and `oboete work choose <binding-id> <work-id|new>` to resolve work choices.' : ''));
+    (counts.awaiting > unbound ? ' Use `oboete work status` and `oboete work choose <binding-id> <work-id|new>` to resolve work choices.' : '') +
+    (unbound > 0 ? ' A source with no binding takes `oboete work choose-source <source-id> <work-id|new>`.' : ''));
 }
 
 export function spoolItem(paths: OboetePaths): DoctorItem {

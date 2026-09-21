@@ -82,8 +82,9 @@ does not. Unmatched contradictions remain a separate recall-quality acceptance t
 
 `doctor` reports source processing independently from provider connectivity. Its `generation`
 item counts a summarizable pending source whose work is not resolved as `awaiting a work choice`,
-not as `pending`, stays at least a warning while any remain, and names `oboete work status` and
-`oboete work choose <binding-id> <work-id|new>` as the next steps (#336). `why <session-id>`
+not as `pending`, stays at least a warning while any remain, and names the next steps: `oboete work
+status` and `oboete work choose <binding-id> <work-id|new>` for a bound source, `oboete work
+choose-source <source-id> <work-id|new>` for one with no binding (#336). `why <session-id>`
 reports at most 100 retained source IDs with cursor/outcome/retry metadata, never raw or provider
 bodies. Receipts retain turn membership and fixed historical-update/delete decisions, including
 the protected target and capture-order reason. After raw expiry they report unavailable source

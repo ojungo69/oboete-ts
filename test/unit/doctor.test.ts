@@ -1329,9 +1329,16 @@ test('pending sources awaiting a work choice warn without counting as pending (#
     assert.match(awaiting.recovery, /oboete work status/);
     assert.match(awaiting.recovery, /oboete work choose <binding-id> <work-id\|new>/);
 
-    // #336: an absent binding also awaits a choice, including SQL's NULL result for IN.
+    assert.doesNotMatch(awaiting.recovery, /choose-source/);
+
+    // #336: an absent binding also awaits a choice, including SQL's NULL result for IN; `work choose`
+    // cannot reach it, so the step names `choose-source` instead.
     db.exec("UPDATE raw_events SET work_binding_id = NULL WHERE id = 'late-source'");
-    assert.deepEqual(generationItem(db, false), awaiting);
+    const unbound = generationItem(db, false);
+    assert.equal(unbound.status, 'warning');
+    assert.equal(unbound.reason, awaiting.reason);
+    assert.match(unbound.recovery, /oboete work choose-source <source-id> <work-id\|new>/);
+    assert.doesNotMatch(unbound.recovery, /work choose <binding-id>/);
 
     db.prepare(`INSERT INTO raw_events
       (id, repo_id, session_id, kind, content, classification_state, processing_state, work_binding_id)
