@@ -12,8 +12,9 @@ so a compaction lets a memory come back. A related memory that was injected once
 untouched for ninety days stops being offered; one that was never injected stays a candidate. The
 session-start pack draws its pinned memories and its checkpoint from a different path, which
 retirement does not filter — though budget, privacy and duplicate checks still apply there, so
-selection is eligibility, not a promise. Retirement is about the prompt, not the store — a retired
-memory is still there, and `oboete search`, `oboete get` and `oboete why` still find it. All four agents share one SQLite store; the
+selection is eligibility, not a promise. Retirement withholds a memory from the prompt and never
+from the store: `oboete search`, `oboete get` and `oboete why` still find it. All four agents
+share one SQLite store; the
 boundaries are sensitivity and repository, never which agent produced a memory. There is no
 subscription: capture and lexical search work with zero credentials, and a remote summarizer is
 optional after an explicit consent screen.
@@ -386,8 +387,8 @@ with `> `).
 `@secretlint/core` with the recommend preset, gated entropy, and the process's own credential
 variables — `OBOETE_CF_ACCOUNT_ID` and any `OBOETE_*` name ending in `_API_KEY` or `_API_TOKEN`,
 whose value is at least eight characters) before the first write anywhere, including the spool.
-This is a guarantee about capture. Material that arrives through `oboete import` is written to
-quarantine first and classified afterwards, by the same detector, in the worker. A detector throw, a deadline, or a
+This is a guarantee about capture; imported material is classified afterwards instead, in the
+worker, by the same detector. A detector throw, a deadline, or a
 malformed `.oboete.toml` stores metadata only (`classification_state = failed`) and never the
 unsanitized payload. Availability fails open: capture still exits 0.
 
@@ -405,8 +406,8 @@ absolute rules in `config.toml`.
 **Repository boundary.** Identity is the normalized git remote (userinfo, query, and fragment
 removed) or the realpath of `git rev-parse --git-common-dir`. Injection, search, timeline, get,
 the Model Context Protocol tools, and the viewer all use that same-repository scope, with one
-exception: an approved personal projection is readable wherever you are, because you approved that
-exact text. Nothing else widens the scope, and cross-repository search is milestone M2 or later.
+exception: an approved personal projection, described below. Nothing else widens the scope, and
+cross-repository search is milestone M2 or later.
 
 **Audience inside a repository.** Being in the same repository is necessary, not sufficient. A
 memory is readable when it belongs to the project, or to the work item you have selected, or is a
