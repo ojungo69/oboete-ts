@@ -20,7 +20,8 @@ const USAGE = 'Usage: oboete sync init <dir> [--classes eligible,local_only,priv
   '       oboete sync leave [--json]\n' +
   'The directory must already exist and may not contain, or sit inside, the oboete home.\n' +
   '`key show` and `join` read and print the key on a terminal only.\n' +
-  'A space holds at most 32 replicas; init syncs eligible memories unless --classes says otherwise.\n';
+  'One pull reads at most 32 other replicas\' bundles; init syncs eligible, local_only and private\n' +
+  'memories unless --classes narrows that.\n';
 
 type Io = { out(text: string): void; err(text: string): void; isTty(): boolean; readSecret(prompt: string): Promise<string> };
 

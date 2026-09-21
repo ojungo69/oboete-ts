@@ -5,9 +5,12 @@
 oboete captures what happens in a coding session on this machine, writes summaries in the
 background, and injects the relevant decisions, discoveries, and next actions into the next
 session of Claude Code, Codex, Grok Build, or Pi. What it injects is bounded, not everything it
-knows: a pack takes at most five percent of the model's context window, and at most 10,000
-characters for Claude and Grok. It skips what this conversation already received, and it stops
-offering a memory that has been sitting unread for ninety days. Retirement is about the prompt,
+knows: a pack is sized from an estimate of the model's context window, five percent of it by
+default (`[injection] context_fraction`, up to 0.5), with a further cap of 10,000 characters for
+Claude and Grok. It skips what this conversation already received in the current context epoch,
+so a compaction lets a memory come back. A related memory that was injected once and left
+untouched for ninety days stops being offered; one that was never injected stays a candidate, and
+a pinned memory or the current checkpoint is delivered regardless. Retirement is about the prompt,
 not the store — a retired memory is still there, and `oboete search`, `oboete get` and
 `oboete why` still find it. All four agents share one SQLite store; the
 boundaries are sensitivity and repository, never which agent produced a memory. There is no
@@ -25,9 +28,11 @@ machines as encrypted bundles in a shared directory, and never opens a network c
 Encrypted remote sync through R2 and semantic (vector) search are milestone M2 and are not
 implemented.
 
-The engine is verified on macOS: continuous integration runs the suite on macOS 15 on both
-supported Node versions. What is not verified there is the agent integration — the hooks, the
-native probes and the timing — so macOS remains milestone M4 as a supported platform. Windows
+macOS is partly qualified. The whole engine gate passes on an M1 iMac on both supported Node
+versions; the macOS runner in continuous integration still fails the hook cold start on its timer
+spread and occasionally a one-off timing test (#256), which are recorded rather than counted as
+passes. Agent probes on macOS are unverified because neither machine has an agent command line
+installed (#269). macOS therefore remains milestone M4 as a supported platform, and Windows
 support is milestone M5.
 
 The previous implementation is preserved under [`legacy/`](legacy/README.md) as read-only evidence.
@@ -41,8 +46,9 @@ The previous implementation is preserved under [`legacy/`](legacy/README.md) as 
   exits after fifteen minutes idle (`[worker] resident`, `idle_exit_ms`). `oboete observe
   --resident` starts one by hand, `oboete observe --stop` ends it, and a plain `oboete observe`
   is a single bounded run.
-- Hooks are short-lived processes. A capture hook has 300 ms from process start; a hook that also
-  delivers an injection has 1,300 ms, because delivery has to wait for the pack.
+- Hooks are short-lived processes. A capture hook has 300 ms from process start; a native hook that
+  also delivers an injection has 1,300 ms, because delivery has to wait for the pack. Pi splits the
+  two: its session start gets 1,300 ms and each prompt injection gets 300 ms.
 - All four agents share one store. Boundaries are sensitivity and repository, never the agent, and
   within a repository a memory is also scoped by audience: the project, one work item, or a
   personal projection you approved.
@@ -73,7 +79,7 @@ The full set of rules is in [`CONSTITUTION.md`](CONSTITUTION.md).
 | | |
 | --- | --- |
 | Node.js | 22.16 is the engine minimum (`engines.node` is `>=22.16`, and `node:sqlite` is unflagged there). 24.x is recommended and is what the isolated dogfood account runs, because Pi 0.84.4 requires Node.js >= 22.19. Continuous integration exercises 22.16.0 and 24.x. |
-| Operating system | Linux today (including this Windows Subsystem for Linux host). The engine passes continuous integration on macOS 15 on both Node versions, but the agent integration there is unverified, so macOS stays milestone M4 and Windows milestone M5. Paths go through `os.homedir()` and `node:path`; there is no Unix-socket, `flock`, or bash-only hook. |
+| Operating system | Linux today (including this Windows Subsystem for Linux host). The engine gate passes on an M1 iMac on both Node versions; the macOS CI runner still fails a cold-start timing check (#256), and agent probes there are unverified (#269), so macOS stays milestone M4 and Windows milestone M5. Paths go through `os.homedir()` and `node:path`; there is no Unix-socket, `flock`, or bash-only hook. |
 
 ## Install
 
@@ -248,7 +254,7 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
 - `oboete search <query> [--limit N]` — same-repository active memories by lexical relevance
   (working directory); an empty result exits 0 with `No memories matched this query in the current
   repository.` and the lexical note. `--limit` accepts 1 to 50 and defaults to 10, and a very long
-  query is indexed on its first 128 terms.
+  query is indexed on at most 128 distinct terms, the longest ones first.
 - `oboete timeline [--session <id>]` — sessions, turns, and memory metadata of the current
   repository; empty list exits 0. The list is the 50 most recent sessions, with no pagination past
   them.
@@ -286,11 +292,14 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   `--map-project-hash` do the same for the other entities; each mapping list holds at most 1,000
   entries. Limits differ by format: 64 KiB per line for v1, 4 MiB per line for v2, 256 MiB per
   native file, and 5 MiB with at most 20,000 records for a claude-mem file. A secret row that
-  carries any text, concepts or sources is refused; exit 2 on an invalid file.
+  carries text or concepts is refused; format 1 also requires its sources to be empty, while
+  format 2 accepts the redacted source records that carry hashes and relationships only. Exit 2 on
+  an invalid file.
 - `oboete import promote <migration-record-id> --work <local-work-id>` / `oboete import promote
   --list` — promotes one imported **sharing proposal** that local classification has cleared,
   creating a pending proposal for you to approve; it is not a way to release arbitrary quarantined
-  memories. `--list` prints the records that qualify.
+  memories. `--list` prints up to 100 imported sharing-proposal records, each marked with whether
+  it can be promoted, and says how many it left out.
 - `oboete mcp` — stdio JSON-RPC server under the current working directory, exposing `search`,
   `timeline` and `get`, plus `work_status`, `work_choose`, `sharing_status` and `sync_status`. Of
   those, only `work_choose` changes anything: approving a sharing proposal, and pushing, pulling or
@@ -303,7 +312,8 @@ stays resident until fifteen minutes idle). `oboete sync init <dir>`, `join`, `p
 `status`, `resolve`, `key show`, `map-repo` and `leave` move memories between your own machines
 through encrypted bundles in a shared directory; there is no network transport. The directory has
 to exist already and may not sit inside — or contain — your oboete home, `key show` and `join`
-need a terminal, and a space holds at most 32 replicas.
+need a terminal, and a pull reads at most 32 other replicas' bundles. A new space syncs the
+`eligible`, `local_only` and `private` classes unless `--classes` narrows it.
 
 ## Privacy model
 
@@ -313,12 +323,13 @@ given to the observer; only summaries are stored as memories.
 
 Not every agent supplies every event. Codex's Stop hook receives no assistant text — the final
 message goes to `codex exec --output-last-message` instead — so a Codex turn is recorded as a turn
-end with no message, and its compaction summaries are recorded as the fact that a compaction
-happened, with no summary text. Claude, Grok and Pi supply both.
+end with no message. Compaction summary text is missing for Codex and for Grok Build alike: both
+contracts carry the fact that a compaction happened and no summary, so the record is the event
+without its text. Claude and Pi supply both.
 
-A hook reads at most 256 KiB of the event on standard input. More than that becomes a truncated
-partial capture, which is redacted and stored but is never promoted into a memory or injected; if
-the whole event matters, replay it with the complete input. Repository rules in `.oboete.toml` are
+A hook reads at most 256 KiB of the event on standard input, every time — replaying the same
+oversized event truncates it again. What is read becomes a partial capture: redacted and stored,
+but never promoted into a memory and never injected. Repository rules in `.oboete.toml` are
 bounded too: at most 64 entries of at most 256 characters each.
 
 **What never is.** Secret values (redacted to `[REDACTED:<rule>]` before the first write, including
@@ -334,8 +345,8 @@ with `> `).
 | Class | How it is reached | Where it may go |
 | --- | --- | --- |
 | `eligible` | A `local_only` row whose worker detector and entropy checks pass | Remote summarizer; local summarizer of the same repository; injection of the same repository; device sync |
-| `local_only` | Default at capture | Local summarizer of the same repository; injection of the same repository; never a remote summarizer until promotion |
-| `private` | Never promoted once set; import may carry it. Capture does not assign this class: `<private>` tags are stripped instead | Local summarizer of the same repository; injection of the same repository; never a remote summarizer |
+| `local_only` | Default at capture | Local summarizer of the same repository; injection of the same repository; device sync when the space admits the class; never a remote summarizer until promotion |
+| `private` | Never promoted once set; import may carry it. Capture does not assign this class: `<private>` tags are stripped instead | Local summarizer of the same repository; injection of the same repository; device sync when the space admits the class; never a remote summarizer |
 | `secret` | Secretlint, gated entropy, a repository path rule in `.oboete.toml`, or a detector failure that fails closed | Nowhere. `isAllowed` returns false for every destination. The export file carries hashes only |
 
 **Secret detection before any write.** The hook runs the detector (private strip, path rules,
@@ -370,7 +381,8 @@ thing that crosses repositories, because you approved that exact text. When a wo
 than one active work item and nothing says which one you mean, work selection is withheld rather
 than guessed: `oboete work status` shows the choice and `oboete work choose <binding-id>
 <work-id|new>` makes it. `oboete share status`, `share approve` and `share reject` decide the
-personal proposals, and `share adopt` takes one into your own store.
+personal proposals. `share adopt <memory-id>` is a different move: it takes a memory of the work
+you have selected and widens it to the whole project.
 
 **What leaves the machine.** Only after the consent screen, and only `eligible` rows plus an
 opaque repository id, to the destination host of the consented remote preset (Cloudflare
@@ -383,9 +395,9 @@ provenance only. Eligibility is sensitivity and repository, never the producing 
 User Story 1). Setup and doctor warn when Claude auto-memory, Codex memories, or Grok native
 memory is enabled; oboete neither reads those stores nor changes them (FR-032, FR-043).
 
-**Export.** Format `oboete-export/1`. A secret row or a tombstone is written with empty `title`,
-`body`, `concepts`, and `sources`; the hashes remain so the other side can still recognize the
-same content.
+**Export.** Format `oboete-export/2` by default, with `--format 1` for a destination that reads
+only the older memory-only file. A secret row or a tombstone is written with empty `title`, `body`
+and `concepts`; the hashes remain so the other side can still recognize the same content.
 
 ## Degraded modes
 
@@ -401,7 +413,10 @@ indefinitely therefore keeps raw captured content indefinitely.
 
 Before falling back, the worker tries the providers you configured as fallbacks, in order — at
 most three entries, filtered by the cost policy, and included in the consent record, so adding one
-is a change you accept in `oboete setup`. The rules are used when every admitted target fails.
+is a change you accept in `oboete setup`. Two outcomes end the chain immediately instead of moving
+to the next target: a consent record that no longer matches the settings (`consent_changed`), and
+an answer the worker could not use (`unusable_output`). Otherwise the rules are used once every
+admitted target has failed.
 
 | Reason | Sentence in a pack | What doctor says |
 | --- | --- | --- |
@@ -530,15 +545,16 @@ Implemented and verified here is not the same as qualified. At this version:
   exercised by generated pairs rather than by two native agents running in sequence (#265).
 - **Recall against a real summarizer is not measured.** The evaluation runs with no provider, so
   the recorded figure is what the rules alone produce, not what a model would.
-- **Scale and long-run behaviour are open.** The resource sweep covers about a thousand events over
-  half a minute; ten thousand and a hundred thousand events are #267, and seven days of real use is
-  #268. Nothing here measures what a week of memories costs to hold or to search.
+- **Scale and long-run behaviour are open.** The resource sweep replays about a thousand events in
+  roughly four minutes and then holds a reader open for 24.9 seconds against the resident worker;
+  ten thousand and a hundred thousand events are #267, and seven days of real use is #268. Nothing
+  here measures what a week of memories costs to hold or to search.
 - **Device sync moves files, not a service.** It has no network transport, no signatures on
-  bundles, and a space is at most 32 replicas.
+  bundles, and one pull reads at most 32 other replicas' bundles.
 - **Search is lexical.** Word match with a Chinese/Japanese/Korean bigram index; semantic search is
   milestone M2.
-- **Only Linux is supported.** The engine passes on macOS in continuous integration, but the agent
-  wiring there is unverified.
+- **Only Linux is supported.** The engine gate passes on an M1 iMac, the macOS CI runner still
+  fails a cold-start timing check, and the agent wiring on macOS is unverified.
 
 Historical measurements quoted above are dated and describe the build that produced them. Treat
 them as receipts of that run, not as a guarantee about the current product.
