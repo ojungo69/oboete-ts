@@ -28,8 +28,9 @@ type FakeChild = EventEmitter & {
  * answering that with a scripted CLI reply (or failing it as unexpected) stalls the pass instead of
  * reporting anything, so every other command is handed to the real `spawn`.
  */
-export function cliSpawn(texts: string[]): { spawn: typeof spawn; calls: () => number } {
+export function cliSpawn(texts: string[]): { spawn: typeof spawn; calls: () => number; prompts: string[] } {
   let count = 0;
+  const prompts: string[] = [];
   return {
     spawn: ((command: string, args: readonly string[], options: { signal?: AbortSignal } = {}) => {
       if (!FAKED.has(command)) return nodeSpawn(command, [...args], options);
@@ -39,8 +40,10 @@ export function cliSpawn(texts: string[]): { spawn: typeof spawn; calls: () => n
         stderr: new PassThrough(),
         kill: () => true,
       }) as FakeChild;
-      child.stdin.resume();
+      let prompt = '';
+      child.stdin.on('data', (chunk: Buffer) => { prompt += chunk.toString('utf8'); });
       child.stdin.on('finish', () => {
+        prompts.push(prompt);
         const text = texts[count];
         count += 1;
         child.stdout.end(text === undefined ? '' : JSON.stringify({ result: text }));
@@ -59,5 +62,6 @@ export function cliSpawn(texts: string[]): { spawn: typeof spawn; calls: () => n
       return child;
     }) as unknown as typeof spawn,
     calls: () => count,
+    prompts,
   };
 }

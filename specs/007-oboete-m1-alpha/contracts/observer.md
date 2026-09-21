@@ -78,7 +78,12 @@ tool inputs and outputs by recency; `observation_batches.excerpted` records it.
 
 `source_event_ids` is required on every observation and must be a non-empty subset of the `id`
 values supplied in `events` (same batch, same repository); an observation citing an unknown,
-empty, or foreign id is rejected as `unusable_output` (one retry). The fallback fills it by rule
+empty, or foreign id is rejected as `unusable_output` (one retry). The request does not carry the
+stored ids: each request names its events `e1..eN` and its nearby records `m1..mN`, in a table that
+belongs to that request alone, and the answer's `source_event_ids`, checkpoint sources and nearby
+target are mapped back before validation. An alias the request did not send, or an `m` alias cited
+as a source, is validated as the foreign id it is. A stored id copied correctly is still accepted
+(#329: small models mis-copy 64-hex ids, and one wrong id failed the whole batch). The fallback fills it by rule
 (the events of the turn for `change`, the failed and the retried call for `bugfix`, the failed
 call for `discovery`, the message event for `decision`). **Output budget and schema caps** (shared zod schema, both paths): at most 20 observations
 per batch, `source_event_ids` at most 50, each citation string at most 512 characters, at most 20

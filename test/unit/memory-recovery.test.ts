@@ -99,7 +99,8 @@ for (const at of ['before', 'send']) test(`a checkout replaced ${at} detection c
       },
       fetch: async (_url, options) => {
         const input = sentInput(options);
-        leaked ||= input.events.some((event) => event.id === sourceId);
+        // Events travel under per-request aliases (#329): the old tool call is known by its path.
+        leaked ||= JSON.stringify(input.events).includes('secrets/fixture.txt');
         return openAiResponse(providerOutput(input.events[0].id));
       },
     });
@@ -241,7 +242,8 @@ for (const verdict of ['clean', 'failed', 'late', 'deleted'] as const) {
         },
         fetch: async (_url, options) => {
           const input = sentInput(options);
-          leaked ||= input.nearby.some((candidate) => candidate.id === memory.id);
+          // Nearby records travel under per-request aliases (#329): the memory is known by its content.
+          leaked ||= input.nearby.some((candidate) => candidate.title === memory.title && candidate.body === memory.body);
           const output = providerOutput(input.events[0].id);
           output.observations[0].body = 'A separate retry result was recorded.';
           return openAiResponse(output);
@@ -458,8 +460,10 @@ test('a large source and more than fifty sources complete through lossless pages
       assert.equal(await observeAt(fixture, NOW + 5_000 * attempt, fetch), 0);
     }
     assert.ok(calls > 2);
-    const fragments = sent.filter((event) => event.id === sourceId).map((event) => event.fragment!);
+    // Requests name events by per-request alias (#329); the large source is the only one paged.
+    const fragments = sent.flatMap((event) => (event.fragment === undefined ? [] : [event.fragment]));
     assert.ok(fragments.length > 1);
+    assert.equal(new Set(fragments.map((fragment) => fragment.source_hash)).size, 1, 'every page is one source');
     let offset = 0;
     for (const fragment of fragments) {
       assert.equal(fragment.start, offset, 'acknowledged ranges cannot repeat or skip');
@@ -471,7 +475,13 @@ test('a large source and more than fifty sources complete through lossless pages
         WHERE raw_event_id = ? ORDER BY recorded_at`).all(sourceId),
     }))));
     assert.equal(JSON.parse(fragments.map((fragment) => fragment.text).join('')).text, large);
-    assert.notEqual(sent[1].id, sourceId, 'other sources get a turn before the large source continues');
+    assert.equal(sent[1].fragment, undefined, 'other sources get a turn before the large source continues');
+    // Each page's alias came back as the one original id: every sent range is recorded against it.
+    fixture.withDb((db) => {
+      const recorded = db.prepare(`SELECT 1 FROM observation_batch_sources
+        WHERE raw_event_id = ? AND portion_start = ? AND portion_end = ?`);
+      for (const fragment of fragments) assert.ok(recorded.get(sourceId, fragment.start, fragment.end), `${fragment.start}-${fragment.end}`);
+    });
     fixture.withDb((db) => {
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE kind = 'prompt' AND processing_state <> 'processed'").get()?.n, 0);
       assert.ok(Number(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE evidence IS NOT NULL').get()?.n) > 0);
@@ -563,7 +573,8 @@ test('explicit reprocessing selects one retained legacy source without starting 
     assert.equal(await runObserveForFixture(fixture, {
       fetch: async (_url, options) => {
         calls += 1;
-        assert.deepEqual(sentInput(options).events.map((event) => event.id), [ids[0]]);
+        // Only the chosen source travels (by per-request alias, #329, so it is matched by its text).
+        assert.deepEqual(sentInput(options).events.map((event) => [event.id, event.text]), [['e1', prompts[0]]]);
         return openAiResponse(providerOutput(ids[0]));
       },
     }, ['--reprocess-source', ids[0]]), 0);
@@ -620,9 +631,11 @@ for (const decision of ['update', 'delete'] as const) {
       const old = providerOutput(oldId);
       old.observations[0].title = 'Original upload service retry';
       old.observations[0].body = 'The upload service retry originally ran once.';
-      old.observations[0].classification = { decision, target: memoryId, reason: 'Original source describes the retry.' };
+      const currentTitle = current.observations[0].title;
       await observeAt(fixture, NOW + 6 * 60_000, async (_url, options) => {
-        assert.ok(sentInput(options).nearby.some((memory) => memory.id === memoryId));
+        const sent = sentInput(options).nearby.find((memory) => memory.title === currentTitle);
+        assert.ok(sent, 'the protected memory was sent');
+        old.observations[0].classification = { decision, target: sent.id, reason: 'Original source describes the retry.' };
         return openAiResponse(old);
       });
       fixture.withDb((db) => {
@@ -755,12 +768,14 @@ test('confirmation followed by deletion cannot restore evidence for the deleted 
     const memoryId = fixture.withDb((db) => String(db.prepare("SELECT id FROM memories WHERE type = 'discovery'").get()!.id));
     await captureEndedSession(fixture, { sessionId: 'after-delete', prompts: ['Remove the obsolete retry behavior.'] });
     const sourceId = eventId(fixture, 'Remove the obsolete retry behavior.');
+    const memoryTitle = fixture.withDb((db) => String(db.prepare('SELECT title FROM memories WHERE id = ?').get(memoryId)!.title));
     await observeAt(fixture, NOW + 60_000, async (_url, options) => {
-      assert.ok(sentInput(options).nearby.some((memory) => memory.id === memoryId));
+      const sent = sentInput(options).nearby.find((memory) => memory.title === memoryTitle);
+      assert.ok(sent, 'the memory was sent');
       const confirm = providerOutput(sourceId).observations[0];
       const remove = providerOutput(sourceId).observations[0];
-      confirm.classification = { decision: 'noop', target: memoryId, reason: 'The existing note matches.' };
-      remove.classification = { decision: 'delete', target: memoryId, reason: 'The obsolete note is removed.' };
+      confirm.classification = { decision: 'noop', target: sent.id, reason: 'The existing note matches.' };
+      remove.classification = { decision: 'delete', target: sent.id, reason: 'The obsolete note is removed.' };
       return openAiResponse({ ...providerOutput(sourceId), observations: [confirm, remove] });
     });
     fixture.withDb((db) => {

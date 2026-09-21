@@ -782,7 +782,7 @@ function storedEvents(fixture: Fixture, nativeSessionId: string, kind: string): 
  * The observer input travels as the user message of the provider's own request shape (llm.ts), so
  * it is found by walking the request body and parsing the string that carries `repo_ref`.
  */
-function observerInputOf(body: string): { repo_ref?: string; nearby?: { id: string }[] } {
+function observerInputOf(body: string): { repo_ref?: string; nearby?: { id: string; title: string }[] } {
   const queue: unknown[] = [JSON.parse(body)];
   while (queue.length > 0) {
     const value = queue.shift();
@@ -795,7 +795,7 @@ function observerInputOf(body: string): { repo_ref?: string; nearby?: { id: stri
       continue;
     }
     if (value !== null && typeof value === 'object') {
-      if ('repo_ref' in value) return value as { repo_ref?: string; nearby?: { id: string }[] };
+      if ('repo_ref' in value) return value as { repo_ref?: string; nearby?: { id: string; title: string }[] };
       queue.push(...Object.values(value));
     }
   }
@@ -1029,7 +1029,9 @@ test('SC-005/SC-006: the outbound body of a mixed session carries the eligible r
 
     const body = observerInputOf(providerBody);
     assert.equal(body.repo_ref, repoId);
-    assert.deepEqual((body.nearby ?? []).map((item) => item.id), ['m_eligible']);
+    // Nearby records travel under per-request aliases (#329): the one sent is the eligible memory.
+    assert.deepEqual((body.nearby ?? []).map((item) => [item.id, item.title]), [['m1', 'Uploader retry count']]);
+    assert.equal(providerBody.includes('m_eligible'), false, 'the stored memory id does not travel');
     // R10: the identity that would leak is the normalized remote (or path); neither travels.
     const identity = fixture.withDb((db) => String(db.prepare('SELECT normalized_identity FROM repos WHERE id = ?').get(repoId)?.normalized_identity));
     assert.notEqual(identity, '');

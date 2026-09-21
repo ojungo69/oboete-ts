@@ -91,6 +91,7 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   the `limit` branch that also reports `mmr_redundant` is #324.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 - [X] T049 [US3] Let `oboete fixture replay` evaluate a remote preset: an opt-in `--pass-credentials` that keeps oboete's credential variables for the replay's own hooks and workers, refused unless the home's consent record matches, with every kept value scanned as an SC-005 secret and scrubbed from child output; the agent CLI spawn strips every oboete credential variable (#328; the catalog-before-consent question is #333).
+- [X] T050 [US3] Send observer requests with per-request aliases for event and nearby ids (`e1..`, `m1..`) and map the answer back before the unchanged validation, on every provider path (#329).
 
 ## Phase 6: US4 — Share at the correct scope (P1)
 
