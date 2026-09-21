@@ -1,4 +1,5 @@
 // Ranking over lexical candidates (research.md R5): RRF, MMR, budget cut.
+import { materialHash } from '../db/identity.js';
 
 export type RankRow = {
   id: string;
@@ -105,24 +106,9 @@ type MmrCandidate = {
   text: string;
   counts: Map<string, number>;
   maxSim: number;
+  /** Content identity as the store defines it (A13, FR-035): title and body, each normalized. */
+  material: string;
 };
-
-function mmrRedundant(
-  picked: MmrCandidate,
-  maxRrf: number,
-  selected: RankRow[],
-  lambda: number,
-): boolean {
-  const relevance = maxRrf > 0 ? (picked.row.score_rrf ?? 0) / maxRrf : 0;
-  const bestSim = selected.length > 0 ? picked.maxSim : 0;
-  // R5: LIKE never votes, so rrf is 0; do not treat any cosine > 0 as redundancy.
-  return (
-    maxRrf > 0 &&
-    selected.length > 0 &&
-    bestSim > 0 &&
-    (1 - lambda) * bestSim >= lambda * relevance
-  );
-}
 
 /** The next candidate MMR picks: the highest score, ties broken by id. */
 function bestMmrCandidate(
@@ -149,20 +135,27 @@ function bestMmrCandidate(
   return { index: bestIndex, mmr: bestMmr };
 }
 
-/** Keeps the picked candidate or rejects it, and refreshes what the rest are now similar to. */
+/**
+ * Keeps the picked candidate or rejects it, and refreshes what the rest are now similar to.
+ * Only identical content is rejected (#272): similarity orders the candidates in
+ * `bestMmrCandidate`, but no cosine separates a changed fact from a duplicate (one changed word can
+ * score above 0.99), so a distinct fact that shares wording is ranked lower and left to the budget.
+ */
 function admitMmrCandidate(
   picked: MmrCandidate,
   bestMmr: number,
   remaining: MmrCandidate[],
   selected: RankRow[],
   rejected: { row: RankRow; reason: 'mmr_redundant' }[],
-  bounds: { maxRrf: number; lambda: number; limit: number },
+  seen: Set<string>,
+  limit: number,
 ): void {
-  if (mmrRedundant(picked, bounds.maxRrf, selected, bounds.lambda) || selected.length >= bounds.limit) {
+  if (seen.has(picked.material) || selected.length >= limit) {
     rejected.push({ row: picked.row, reason: 'mmr_redundant' });
     return;
   }
   selected.push({ ...picked.row, score_mmr: bestMmr });
+  seen.add(picked.material);
   for (const item of remaining) {
     item.maxSim = Math.max(
       item.maxSim,
@@ -180,16 +173,17 @@ export function mmrSelect(
   const maxRrf = rows.reduce((best, row) => Math.max(best, row.score_rrf ?? 0), 0);
   const remaining = rows.map((row) => {
     const text = packedText(row);
-    return { row, text, counts: trigramCounts(text), maxSim: 0 };
+    return { row, text, counts: trigramCounts(text), maxSim: 0, material: materialHash(row.title, row.body) };
   });
   const selected: RankRow[] = [];
   const rejected: { row: RankRow; reason: 'mmr_redundant' }[] = [];
+  const seen = new Set<string>();
 
   while (remaining.length > 0) {
     // The splice stays here so the loop's own condition can be seen to make progress.
     const best = bestMmrCandidate(remaining, selected, maxRrf, lambda);
     const [picked] = remaining.splice(best.index, 1);
-    admitMmrCandidate(picked, best.mmr, remaining, selected, rejected, { maxRrf, lambda, limit });
+    admitMmrCandidate(picked, best.mmr, remaining, selected, rejected, seen, limit);
   }
 
   return { selected, rejected };

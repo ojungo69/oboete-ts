@@ -59,14 +59,14 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
 
 - [X] T021 [US3] Correct readiness/lease barriers and prior-delivery accounting in `src/fixture/replay.ts` and `src/fixture/replay-evaluate.ts`, with a focused `test/unit/replay-evaluate.test.ts` regression.
 - [X] T022 [US3] Add source-stage accounting and inspectable omission reasons in `src/fixture/replay-evaluate.ts`, `src/why.ts` and `src/fixture/replay-report.ts`.
-- [ ] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
+- [X] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
   `src/db/queries.ts` and `test/unit/retrieval.test.ts`. Status: none reproduce on the `events-1000` corpus
   (the no-model replay stops every fact before ranking; stored verbatim, all 40 fixture facts rank within the
   first five), pinned in `test/unit/retrieval.test.ts`. Two misses were found after that: the
   small-corpus threshold drop #275, reproduced from the `2026-09-17T15-05-08-894Z` dogfood run (JST
   2026-09-18) as a five-row artifact in the same file, and the MMR depth drop #272, reproduced as a
-  fixture case in the same file. #275 is fixed and its artifact runs; #272 is the open leg, and its
-  artifact is the one still skipped. Acceptance: #275 fixed by retiring the admission threshold
+  fixture case in the same file. Both are fixed and both artifacts run (#275 in E18, #272 in E19).
+  Acceptance: #275 fixed by retiring the admission threshold
   (`.specify/bugs/small-corpus-threshold-drop/assessment.md`, 2026-09-20 decision, measured against two
   replacement gates); that artifact un-skipped and passing; the fixture pins still green; plus the pins the
   artifact alone does not give: a small-corpus false-positive case (an unrelated memory in a five-row corpus
@@ -76,13 +76,19 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   and — replacing the retired `threshold = 0.99` mutation, which guarded the mechanism being removed — a
   mutation that reintroduces magnitude-based exclusion, plus a pin that a config carrying the legacy
   `threshold` key retrieves exactly as one without it.
-  2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
+  2026-09-21, first of two entries (history): the #275 leg is closed and measured — the artifact runs unskipped, a five-row
   false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
   magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,663
   passing (E18). The MMR leg is not: #272 now has the fixture corpus case it asked for, bracketing
-  the boundary — eleven candidates keep the pair, twelve drop it — with the failing half committed
-  skipped, and `lambda` is unchanged. This task stays open for that leg, the way T042 stays open
-  for its own.
+  the boundary — eleven candidates ranked above the pair keep it, twelve drop it — with the failing
+  half committed skipped, and `lambda` is unchanged. This task stays open for that leg, the way T042
+  stays open for its own.
+  2026-09-21: the MMR leg is closed (#272, E19). MMR now rejects only identical content
+  (`materialHash`, A13) and orders the rest; the artifact runs at twelve, fifteen and twenty, a
+  changed fact above cosine 0.99 and a title/body boundary case are kept, and three mutations
+  (the old predicate, a packed-string identity, no rejection) fail four, one and three tests. The
+  fixture pins did not move and the suite is green at 1,667 passing. `lambda` is unchanged, and
+  the `limit` branch that also reports `mmr_redundant` is #324.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 
 ## Phase 6: US4 — Share at the correct scope (P1)
@@ -233,7 +239,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   successful evaluation. See `quickstart.md`. As of C3 (2026-09-10) T023/T024/T040-T043 were all open. T040 has since
   closed on the macOS engine evidence (E10). T023 closed on the no-model `events-1000` replay
   (E12) and reopened on 2026-09-18 for #275, which the first 009 dogfood run,
-  `2026-09-17T15-05-08-894Z` (E13), produced.
+  `2026-09-17T15-05-08-894Z` (E13), produced; it closed again on 2026-09-21 with #275 (E18) and
+  #272 (E19).
 - T025-T028: D1 implements explicit work/project grants, exact personal proposals/projections,
   common source/visibility checks, and CLI/viewer approval plus work-preserving adoption. Both Node
   versions pass 1,097 + 202 checks; installed-browser actions, package validation, normal security,
@@ -488,7 +495,7 @@ writers require separate worktrees. No deployment follows merely from an increme
   `isolated-lifecycle*.mjs`) are #265; the harness's own tests run in `npm test`. The daily
   dogfood's twelve pairs (#244) ran the M1 bundle (schema 3) until the 2026-09-17 move to the 009
   bundle (quickstart E13) and check fact recall only, so they are not SC-002 evidence.
-- T023 (open, 2026-09-18): an isolated no-model replay of `events-1000.jsonl` on `main` `6b683213`
+- T023 (closed 2026-09-21; opened 2026-09-18): an isolated no-model replay of `events-1000.jsonl` on `main` `6b683213`
   stops all 40 tagged facts at coverage (`pending`, `no_range`) with application deferred, so none
   reaches retention or retrieval; that is the no-model design of research.md R6, not a ranking miss.
   Stored verbatim as memories, all 40 rank within the first five for their own queries through
@@ -497,15 +504,15 @@ writers require separate worktrees. No deployment follows merely from an increme
   default, marked historical in `get --history`) and a shared-title pair, and pins the artifact's
   facts and prompts against the probe library; each of ten mutations fails its test (E12). The MMR rule that
   drops distinct but similar facts deep in a candidate list now has the failing corpus case #272
-  asked for (E18): eleven candidates keep the pair, twelve drop it, and the failing half is
-  committed skipped. `lambda` is unchanged, because the fix is to stop rejecting on a
+  asked for (E18): eleven candidates ranked above the pair keep it, twelve drop it, and the failing
+  half was committed skipped until the fix (E19). `lambda` is unchanged, because the fix is to stop rejecting on a
   depth-dependent bar rather than to tune one. The
   first daily run on the 009 bundle then reproduced a miss the fixture cannot: in a five-memory
   corpus FTS5 clamps the IDF of common trigrams, the ratio-to-best normalization drops every other
   candidate below 0.3, and a fact-bearing memory is omitted from the prompt pack (#275, E12
   Limits). That leg is closed: #304 retired the admission threshold, and E18 measures the artifact,
-  a five-row false-positive case, the pack path and a replacement mutation. T023 stays open for the
-  MMR leg (#272) alone.
+  a five-row false-positive case, the pack path and a replacement mutation. The MMR leg (#272) is
+  closed too: MMR rejects only identical content and orders the rest (E19).
 - T024 (open, 2026-09-18): no local or external profile was qualified in 009, because activating a
   real model is not authorised (handoff of 2026-09-10). The no-model replay gives no generated facts
   to measure, and verbatim facts are all found lexically, so the measurement that would justify

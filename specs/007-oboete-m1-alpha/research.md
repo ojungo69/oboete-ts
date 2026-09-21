@@ -115,8 +115,9 @@ approval before implementation starts (task 0).
   `Intl.Segmenter`; non-CJK segments >= 3 chars → trigram terms; CJK segments → bigram terms;
   one-character particles dropped; `LIKE` only when no indexed term remains. BM25 per table
   orders the candidates of that table and decides nothing else; RRF (k = 60) orders across tables
-  (`LIKE` never votes); MMR (lambda 0.5, character-trigram cosine) removes near duplicates; cut at
-  the caller's character budget. FTS5 tables are not `STRICT`.
+  (`LIKE` never votes); MMR (lambda 0.5, character-trigram cosine) orders the rest and removes
+  identical content (#272 below); cut at the caller's character budget. FTS5 tables are not
+  `STRICT`.
 - **Reviewer changes**: particles; `LIKE` non-voting; long-vowel marks; no `UNINDEXED` shortcut; no
   `STRICT` on virtual tables.
 - **2026-09-20 (#275)**: the admission threshold on normalized BM25 is retired. A ratio to the best
@@ -126,6 +127,15 @@ approval before implementation starts (task 0).
   bounds the volume is what already bounded it: the FTS `MATCH`, the per-index candidate limit (50
   per index, up to 100 merged), MMR and the character budget. `injection.threshold` stays accepted
   as a deprecated key so an existing `config.toml` still loads, and has no effect.
+- **2026-09-21 (#272)**: MMR orders and no longer rejects on similarity. The old rule dropped a
+  candidate as `mmr_redundant` when `(1 - lambda) * similarity >= lambda * relevance`, with
+  relevance normalized to the best RRF score, so the bar fell with the candidate's depth: two
+  distinct facts in similar words were both kept behind eleven other candidates and the second was
+  dropped behind twelve. A near-duplicate cutoff cannot replace it, because a changed fact scores as
+  high as a duplicate on the character-trigram cosine (one changed word, an inserted "not", or two
+  swapped values measured 0.99 to 1.0). What is rejected now is identical content as the store
+  defines it (A13, FR-035: title and body each normalized, `materialHash`); a similar row is ranked
+  lower by the same MMR score and left to the character budget.
 
 ## R6. Detached worker, lease, spool, retention, reservations
 
