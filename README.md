@@ -294,7 +294,12 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   A format 2 apply checks the destination first and exits 2 with `destination_schema_not_ready`
   when it is missing, behind or ahead. On a new machine the database is created by a setup run that
   gets past the consent screen — `oboete setup --provider none` does, a bare `oboete setup` on the
-  default remote preset stops there and writes nothing — so set up first, then restore.
+  default remote preset stops there and writes nothing — so set up first, then restore. Let a
+  session be captured in each destination repository before that apply, or name its privacy context
+  with `--map-context`: a row imported with no context resolved stays quarantined for good, because
+  the worker cannot decide its policy, and a second import that changes the mapping is refused
+  (`import_mapping_changed`). The `--dry-run --json` preview is where to check that the contexts
+  resolved.
   Newly inserted readable memories land quarantined, at `local_only` or stricter and
   `review_state = imported`, and stay out of search and injection until the worker classifies them;
   a row that matches a memory you already have keeps your review state, and an incoming label never
@@ -334,7 +339,9 @@ through encrypted bundles in a shared directory; there is no network transport. 
 to exist already and may not sit inside — or contain — your oboete home, `key show` and `join`
 need a terminal, and a pull reads at most 32 other replicas' bundles. A push writes the whole
 revision log as one snapshot and refuses it rather than splitting it when it passes a bound: 256
-MiB of plaintext, 4 MiB for a single line, a million revisions, or 4,096 repositories. A new space syncs the
+MiB of plaintext, 4 MiB for a single line, a million revisions, 4,096 repositories, or 4,096
+revisions of any single record — the last of which ordinary use reaches first, since each push
+records a new revision for a context you have worked in. A new space syncs the
 `eligible`, `local_only` and `private` classes unless `--classes` narrows it.
 
 ## Privacy model
