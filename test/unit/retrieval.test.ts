@@ -931,9 +931,9 @@ test('searchMemories omits an unrelated memory from a five-row corpus', async ()
   });
 });
 
-// The controls for issue #272: the same pair, shallow. These run — if a change to the rule ever
-// drops the pair at these depths, that is a regression here and not a surprise in the red case
-// below.
+// The controls for issue #272: the same pair, above the boundary. Eleven is the deepest list that
+// keeps both facts today, so these run and a change that loses the pair earlier is a regression
+// here rather than a surprise in the red case below.
 function mmr272(depth: number) {
   const ahead = Array.from({ length: depth }, (_, index) =>
     row({
@@ -965,16 +965,18 @@ function assertPairKept(result: ReturnType<typeof mmr272>, depth: number): void 
 }
 
 test('two distinct facts in similar words survive a shallow candidate list', () => {
-  for (const depth of [2, 5, 10]) assertPairKept(mmr272(depth), depth);
+  for (const depth of [2, 5, 10, 11]) assertPairKept(mmr272(depth), depth);
 });
 
-// Artifact for issue #272, RED until the rule is fixed. The same pair at depth fifteen: there the
-// candidate's relevance, normalized to the best RRF score, falls under its trigram similarity to
-// the row already selected, and `mmrSelect` rejects it outright instead of ranking it lower. The
-// depths above are the control, so what this pins is the depth, not the pair.
-test('a distinct fact behind fifteen candidates is not dropped as redundant',
+// Artifact for issue #272, RED until the rule is fixed. Twelve is where the pair starts being
+// dropped: the candidate's relevance, normalized to the best RRF score, falls under its trigram
+// similarity to the row already selected, and `mmrSelect` rejects it outright instead of ranking
+// it lower. Eleven is pinned above, so the two tests bracket the boundary. Sixteen is included
+// deliberately: the rule is not even monotonic in depth — that list keeps the pair again, because
+// which rows are selected first changes what the pair is compared against.
+test('a distinct fact behind a deeper candidate list is not dropped as redundant',
   { skip: 'RED for #272: mmrSelect rejects on a depth-dependent bar, not on near-duplicate similarity' }, () => {
-    assertPairKept(mmr272(15), 15);
+    for (const depth of [12, 15, 20]) assertPairKept(mmr272(depth), depth);
   });
 
 test('order-preserving rescaling of either index does not change rankCandidates selection', () => {

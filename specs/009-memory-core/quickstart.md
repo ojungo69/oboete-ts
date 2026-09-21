@@ -223,8 +223,7 @@ Receipts under `/var/tmp/oboete-009-20260909.jJ5grc/`:
 - `c3-all-node24.log` and `c3-all-node22.log`: 1,032 unit/migration/script checks plus 202 serial
   E2E/fault checks pass on each supported Node version. `c3-pack.log` installs the 20.559 MB package
   and runs its version command. After Ponytail's identical cancellation pairs were consolidated,
-  `c3-ponytail.tap` and `c3-ponytail-node22.tap` pass all 40 affected injection/deferred tests. Test names below are the receipts; line numbers are not quoted, because they move with
-every edit to that file.
+  `c3-ponytail.tap` and `c3-ponytail-node22.tap` pass all 40 affected injection/deferred tests.
   These checks do not replace the unresolved runtime/real-model qualifications above.
 
 ## Increment D1 — work, project and personal sharing
@@ -2994,12 +2993,13 @@ to that file.
   two `OBOETE_SYNC_HEAVY` bounds cases, and the #272 artifact described below, which is red by
   construction.
 
-What is not closed is the MMR leg, and it now has the corpus case #272 asked for, in two halves.
-`two distinct facts in similar words survive a shallow candidate list`
-(`test/unit/retrieval.test.ts`) runs: the same pair behind two, five and ten candidates is kept.
-`a distinct fact behind fifteen candidates is not dropped as redundant` is the same pair at
-fifteen, where the second is omitted as `mmr_redundant` while nothing is omitted as `budget`; it is
-committed skipped, the way the #275 artifact was, so the depth is pinned from both sides rather than
-asserted here. The assessment of the fix — including the cosine measurements that ruled out a
+What is not closed is the MMR leg, and it now has the corpus case #272 asked for, in two halves
+that bracket the boundary. `two distinct facts in similar words survive a shallow candidate list`
+(`test/unit/retrieval.test.ts`) runs: the same pair behind two, five, ten and eleven candidates is
+kept, eleven being the deepest list that keeps it today. `a distinct fact behind a deeper candidate
+list is not dropped as redundant` is the same pair at twelve, fifteen and twenty, where the second
+is omitted as `mmr_redundant` while nothing is omitted as `budget`; it is committed skipped, the way
+the #275 artifact was. The rule is not even monotonic in depth — a list of sixteen keeps the pair
+again, because which rows are selected first changes what the pair is compared against. The assessment of the fix — including the cosine measurements that ruled out a
 similarity cutoff — is a comment on #272, since `.specify/` is outside this repository by policy.
 T023 stays open for that leg, so this section closes one leg of the task and not the task.

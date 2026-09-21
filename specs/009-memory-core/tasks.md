@@ -79,9 +79,10 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
   false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
   magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,663
-  passing (E18). The MMR leg is not: #272 reproduces a drop of a distinct fact once fifteen
-  candidates rank above it, by probe rather than by a fixture corpus case, and `lambda` is
-  unchanged. This task stays open for that leg, the way T042 stays open for its own.
+  passing (E18). The MMR leg is not: #272 now has the fixture corpus case it asked for, bracketing
+  the boundary — eleven candidates keep the pair, twelve drop it — with the failing half committed
+  skipped, and `lambda` is unchanged. This task stays open for that leg, the way T042 stays open
+  for its own.
 - [ ] T024 [US3] Qualify selected local/external profiles on the paraphrase corpus; add semantic retrieval in `src/retrieval/` only if the measured target requires it, documenting primary API/dependency evidence in `specs/009-memory-core/research.md`.
 
 ## Phase 6: US4 — Share at the correct scope (P1)
