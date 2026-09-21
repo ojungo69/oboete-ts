@@ -54,6 +54,10 @@ function formatValue(value: LogValue): string {
 /** A log-safe name for an error: its `code` when it has one, else its class name (never its message, which can quote captured content). */
 export function errorCode(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') {
+    // #336: SQLite's numeric result identifies the storage fault without quoting captured input.
+    if (error.code === 'ERR_SQLITE_ERROR' && 'errcode' in error && typeof error.errcode === 'number') {
+      return `${error.code}:${error.errcode}`;
+    }
     return error.code;
   }
   return error instanceof Error ? error.name : 'unknown';
