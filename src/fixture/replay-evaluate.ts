@@ -174,16 +174,20 @@ export function secretsInFiles(
 ): Set<string> {
   const needles = secrets.filter((row) => row.secret !== '').map((row) => ({ id: row.id, bytes: Buffer.from(row.secret, 'utf8') }));
   const carry = Math.max(0, ...needles.map((needle) => needle.bytes.length - 1));
-  const chunk = Buffer.allocUnsafe(chunkBytes);
+  // One buffer for the whole scan: a new Buffer per chunk piles up until the collector runs, which
+  // on the 51 MB database cost as much as reading it whole.
+  const buffer = Buffer.allocUnsafe(carry + chunkBytes);
   const found = new Set<string>();
   for (const file of files) {
     const fd = openSync(file, 'r');
     try {
-      let tail = Buffer.alloc(0);
-      for (let read = readSync(fd, chunk, 0, chunkBytes, null); read > 0; read = readSync(fd, chunk, 0, chunkBytes, null)) {
-        const window = Buffer.concat([tail, chunk.subarray(0, read)]);
+      let kept = 0;
+      for (let read = readSync(fd, buffer, kept, chunkBytes, null); read > 0; read = readSync(fd, buffer, kept, chunkBytes, null)) {
+        const end = kept + read;
+        const window = buffer.subarray(0, end);
         for (const needle of needles) if (window.includes(needle.bytes)) found.add(needle.id);
-        tail = window.subarray(window.length - Math.min(carry, window.length));
+        kept = Math.min(carry, end);
+        buffer.copyWithin(0, end - kept, end);
       }
     } finally {
       closeSync(fd);

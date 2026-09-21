@@ -302,6 +302,16 @@ test('secretsInFiles finds a secret that straddles a chunk boundary, as a whole-
     writeFileSync(rest, '12345bbb');
     assert.deepEqual([...secretsInFiles([head, rest], secrets, 4)], [], 'a secret split across two files is not one secret');
     assert.throws(() => secretsInFiles([dir], secrets), 'an unreadable surface fails the check rather than counting as clean');
+    assert.throws(() => secretsInFiles([join(dir, 'missing')], secrets));
+    const atEnd = join(dir, 'at-end');
+    const whole = join(dir, 'whole');
+    const empty = join(dir, 'empty');
+    writeFileSync(atEnd, 'yyyyyyyyyyyKEY-12345');
+    writeFileSync(whole, '秘密鍵');
+    writeFileSync(empty, '');
+    for (const chunkBytes of [1, 3, 8, 9, 1 << 20]) {
+      assert.deepEqual([...secretsInFiles([atEnd, whole, empty], secrets, chunkBytes)].sort(), ['ascii', 'utf8'], `chunk ${chunkBytes}`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
