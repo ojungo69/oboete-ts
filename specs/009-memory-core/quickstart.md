@@ -2929,6 +2929,11 @@ file is outside git (`.git/info/exclude`), so nothing would have caught it. Ten 
 read that path, so the next Constitution Check would have held T047's resident worker against a
 rule forbidding it. It now carries `CONSTITUTION.md` verbatim at 5.0.0.
 
+That copy stays untracked on purpose, which means the repair is per checkout rather than per clone:
+`CONSTITUTION.md` is the canonical text, and `cp CONSTITUTION.md .specify/memory/constitution.md`
+is what synchronizes a working copy — that is the command run here. Any checkout whose Spec Kit
+constitution disagrees with `CONSTITUTION.md` is stale and should run it.
+
 **Five lines corrected rather than re-worked**, because in each case the work was done and the line
 described it wrongly:
 

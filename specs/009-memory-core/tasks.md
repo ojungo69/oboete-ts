@@ -166,7 +166,10 @@ Owner amendment, 2026-09-10:
 - [X] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
   Status: 43 markers checked, 36 earned as written. One real defect (the local Spec Kit
   constitution was never synchronized, against what T002 and T046 claim) and five task lines that
-  described their own evidence wrongly. All six are fixed. See E17 in `quickstart.md`.
+  described their own evidence wrongly. The five lines are corrected here; the constitution copy is
+  untracked by repository policy, so its synchronization is a per-checkout step —
+  `cp CONSTITUTION.md .specify/memory/constitution.md` — run in this one. See E17 in
+  `quickstart.md`.
 
 ## Dependencies and implementation strategy
 
