@@ -18,7 +18,10 @@ const ENGINE = join(ROOT, 'dist', 'engine.mjs');
 const CONFIG = '[observer]\npreset = "none"\n\n[worker]\nidle_exit_ms = 60000\n';
 const SAMPLE_MS = 250, RSS_BOUND_KIB = 150 * 1024, WAL_FRACTION = 0.25;
 const TIME_BIN = '/usr/bin/time';
-const HOOK_TIMEOUT_MS = 15_000, REPLAY_TIMEOUT_MS = 40 * 60_000;
+const HOOK_TIMEOUT_MS = 15_000;
+// Phase A took about 240 ms per event at 1,000 events; three times that, never under the 40 minutes
+// the 1,000-event runs had (#267: 10,000 events ~2 h, 100,000 ~20 h).
+const replayTimeoutMs = (fixtureLines) => Math.max(40 * 60_000, fixtureLines * 720);
 const PENDING_TIMEOUT_MS = 3 * 60_000, STOPPED_TIMEOUT_MS = 2 * 60_000, BATCH_WAIT_MS = 60_000, DOCTOR_POLL_MS = 5_000;
 const GATED = new Set(['hooks', 'SC-010', 'lifecycle', 'SC-003']);
 const NO_MODEL = new Set(['SC-009', 'session start']);
@@ -826,6 +829,8 @@ async function selfCheck() {
   assert.equal(countErrorLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0), 1);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=1 reason=batch_error\n', 0), ['batch_error']);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=0 reason=stopped\n', 0), []);
+  assert.deepEqual([1_000, 10_000, 100_000].map(replayTimeoutMs), [2_400_000, 7_200_000, 72_000_000]);
+  assert.equal(replayTimeoutMs(1_051), 2_400_000, 'the 1,000-event fixture keeps the 40 minutes it always had');
   assert.equal(checkWal({ start: 100, peak: 800, final: 0 }).pass, true);
   assert.equal(checkWal({ start: 100, peak: 100, final: 0 }).pass, false);
   assert.equal(checkWal({ start: 100, peak: 100, final: 100 }).pass, false);
@@ -920,10 +925,10 @@ function renderMarkdown(report) {
   let closing = 'Every listed check passed on this run.';
   if (report.error !== undefined) closing = `Harness error: ${report.error} Exit 2.`;
   else if (report.failed) closing = 'One or more checks failed. Exit 1.';
-  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`, sha256 of dist/oboete.mjs and dist/engine.mjs together \`${report.bundleSha256 ?? 'unknown'}\`; the run refuses to start with a modified tracked file and builds those two files itself, so the commit names what ran.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines).\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
+  return `## Resource measurement (T042 / SC-008)\n\n### Setup\n\n- Date: ${report.startedAt}\n- Node: \`${report.node}\`.\n- Commit: \`${report.commit}\`, sha256 of dist/oboete.mjs and dist/engine.mjs together \`${report.bundleSha256 ?? 'unknown'}\`; the run refuses to start with a modified tracked file and builds those two files itself, so the commit names what ran.\n- Fixture: \`${report.fixture}\` (${report.fixtureLines} lines, sha256 \`${report.fixtureSha256 ?? 'unknown'}\`); phase A timeout ${report.replayTimeoutMs ?? 'unknown'} ms.\n- Load average at the start of the run: \`${report.loadAtStart}\`.\n- Config:\n\`\`\`toml\n${CONFIG.trim()}\n\`\`\`\n- Phase B: ${report.sessions} sessions, ${report.prompts} prompts, hold ${report.holdMs} ms.\n- Phase A repository: \`${a.repo}\`, taken from the line --keep prints. Replay JSON reports repoId, not a filesystem path; replayArgv accepts --keep and has no --repo, so a harness-created repository cannot be passed in.\n- Worker exit reason: \`${b.exitReason ?? 'unread'}\` (from logs/observe.log). Expected stopped: observe --stop writes the product sentinel; the resident exits stopped; shutdownResident runs the product's releaseForExit and wal_checkpoint(TRUNCATE).\n- Stop marker after that release: ${stopNote}.\n\n### Phase A replay bounds\n\n${bounds}\n\nGated (must pass): hooks=${a.gated.hooks} duplicates=${a.gated.duplicates} lifecycle=${a.gated.lifecycle} worker=${a.gated.worker}.\nPhase A worker.rssKb (VmHWM): ${a.rssKb} KiB (${kibToMib(a.rssKb)} MiB). memory.db=${a.dbBytes} -wal=${a.walBytes}.\n\nReported-not-gated:\n${notGated}\n\n### Phase B hooks\n\nn=${b.hooks.length} p50=${median(hookMs).toFixed(1)} ms max=${hookMs.length === 0 ? 0 : Math.max(...hookMs)} ms. Non-zero or timeout: ${failedHooks.length}.\n${hookFail}\n\n### Series (phase B hold)\n\n${mdTable(['Series', 'n', 'min', 'median', 'max'], series)}\n\nPer-stage max VmHWM and -wal:\n\n${mdTable(['stage', 'n', 'max VmHWM KiB', 'max -wal bytes'], stageMax)}\n\n### Checks\n\n${mdTable(['Check', 'Status', 'Measured'], checkRows(report))}\n\nPhase B pid VmRSS (first/last) and sample count; growth is not gated:\n\n${pids}\n\n${closing}\nAn interrupted run can leave a detached resident in the temp home.\n`;
 }
-async function phaseA(cli, paths, env) {
-  const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs: REPLAY_TIMEOUT_MS, inheritStderr: true });
+async function phaseA(cli, paths, env, timeoutMs) {
+  const result = await spawnWait(process.execPath, [BUNDLE, 'fixture', 'replay', cli.fixture, '--json', '--home', paths.oboeteHome, '--keep'], { env, cwd: ROOT, timeoutMs, inheritStderr: true });
   if (result.timedOut) throw new HarnessError('phase A replay timed out');
   // 0 is a clean replay and 1 is a replay whose own bounds failed, which replayGates records. Any
   // other code, and any signal, ends the run: the JSON may already have been printed by then.
@@ -1006,8 +1011,12 @@ function buildBundles() {
 // The commit is taken before the build, and checked again once the measuring is done: HEAD can move
 // under a run that takes several minutes, and a receipt naming the revision the tree happened to be
 // on at the end would not be a receipt of the bundle that ran.
-function requireSameRevision(commit, { digest, identity }) {
+function requireSameRevision(commit, { digest, identity, fixture, fixtureSha256 }) {
   requireCleanTree();
+  // A generated 10,000- or 100,000-event fixture is untracked, so the clean-tree check does not
+  // cover it: the receipt names the sha256 read at the start, which only holds if nothing rewrote it.
+  const read = createHash('sha256').update(readFileSync(fixture, 'utf8')).digest('hex');
+  if (read !== fixtureSha256) throw new HarnessError(`the fixture changed during the run (sha256 ${fixtureSha256} became ${read}), so the receipt would name a fixture that did not run`);
   const now = gitHead();
   if (now !== commit) throw new HarnessError(`HEAD moved from ${commit} to ${now} during the run, so the bundle measured is not this revision's`);
   // Every hook starts a new process from those two files, so a rebuild part way through would have
@@ -1021,8 +1030,12 @@ function requireInputs(cli) {
   // Counted here rather than beside the report: this runs inside the try, so a fixture that is a
   // directory, or one that becomes unreadable during the several minutes of a run, is a failure
   // that still keeps the home and prints its path.
-  let lines;
-  try { lines = readFileSync(cli.fixture, 'utf8').split('\n').filter((line) => line !== '').length; } catch (error) {
+  let lines, fixtureSha256;
+  try {
+    const text = readFileSync(cli.fixture, 'utf8');
+    lines = text.split('\n').filter((line) => line !== '').length;
+    fixtureSha256 = createHash('sha256').update(text).digest('hex');
+  } catch (error) {
     throw new HarnessError(`fixture file cannot be read: ${cli.fixture} (${errText(error)})`);
   }
   if (!existsSync(TIME_BIN)) throw new HarnessError(`${TIME_BIN} is required to read each child's peak RSS (apt-get install time)`);
@@ -1032,7 +1045,7 @@ function requireInputs(cli) {
   for (const file of [BUNDLE, ENGINE]) {
     if (!existsSync(file)) throw new HarnessError(`the build produced no ${file}`);
   }
-  return { lines, commit, digest: bundleDigest(), identity: bundleIdentity() };
+  return { lines, fixtureSha256, commit, digest: bundleDigest(), identity: bundleIdentity() };
 }
 // `root` is created by the caller, so a failure part way through still leaves it a home to keep and
 // a path to print.
@@ -1060,17 +1073,17 @@ function buildChecks({ a, b, hits, doctor, paths, samples }) {
 async function runLive(cli) {
   const startedAt = new Date().toISOString(), loadAtStart = loadAverage(), runId = randomUUID().slice(0, 8), samples = [];
   let isolation, paths, workerReason, error, logError;
-  let fixtureLines = 0, commit = 'unknown', digest = 'unknown', identity;
+  let fixtureLines = 0, fixtureSha256 = 'unknown', commit = 'unknown', digest = 'unknown', identity;
   let priorIds, priorFailed, priorDeadline;
   let a = { gated: { hooks: false, duplicates: false, lifecycle: false, worker: false }, failed: [], notGated: [], bounds: [], rssKb: 0, dbBytes: 0, walBytes: 0, repo: '' };
   let b = { samples, hooks: [], hookErrors: [], sessionIds: [], markers: [], walStart: 0, walPeak: 0, walFinal: 0, exitReason: null, stopMarker: false, batchesHeld: 0, unsampledWorkers: [] };
   let checks = null;
   try {
-    ({ lines: fixtureLines, commit, digest, identity } = requireInputs(cli));
+    ({ lines: fixtureLines, fixtureSha256, commit, digest, identity } = requireInputs(cli));
     isolation = mkdtempSync(join(tmpdir(), 'oboete-t042-'));
     paths = prepareIsolation(isolation);
     const env = childEnv(paths);
-    a = await phaseA(cli, paths, env);
+    a = await phaseA(cli, paths, env, replayTimeoutMs(fixtureLines));
     const prior = historyIds(paths.db);
     priorIds = prior.ids;
     priorFailed = prior.failed;
@@ -1081,7 +1094,7 @@ async function runLive(cli) {
     const doctor = await readDoctor(env, paths.repo);
     workerReason = doctor.worker?.reason;
     checks = buildChecks({ a, b, hits, doctor, paths, samples });
-    requireSameRevision(commit, { digest, identity });
+    requireSameRevision(commit, { digest, identity, fixture: cli.fixture, fixtureSha256 });
   } catch (err) {
     // An unexpected error is still a failed run with a database, a spool and a log worth keeping,
     // so it becomes a report rather than a stack trace over a deleted home.
@@ -1105,7 +1118,7 @@ async function runLive(cli) {
   if (error === undefined && logError !== undefined) error = logError;
   const failed = error !== undefined || a.failed.length > 0 || b.hookErrors.length > 0 || (checks !== null && Object.values(checks).some((row) => !row.pass));
   return {
-    startedAt, node: `${process.execPath} (${process.version})`, commit, bundleSha256: digest, fixture: cli.fixture, fixtureLines,
+    startedAt, node: `${process.execPath} (${process.version})`, commit, bundleSha256: digest, fixture: cli.fixture, fixtureLines, fixtureSha256, replayTimeoutMs: replayTimeoutMs(fixtureLines),
     loadAtStart, sessions: cli.sessions, prompts: cli.prompts, holdMs: cli.holdMs, runId, phaseA: a, phaseB: b, checks, failed, error, logError, workerReason,
     home: isolation,
   };

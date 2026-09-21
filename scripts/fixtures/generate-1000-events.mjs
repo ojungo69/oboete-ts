@@ -44,6 +44,7 @@
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 import {
   ABOVE_ONE,
@@ -1409,7 +1410,10 @@ function createCorpusPlans(secrets, directives) {
   return { secretPlan, dirPromptPlan, dirOutputPlan };
 }
 
-function generate() {
+// T042 / #267: `target` above 1,000 adds filler sessions only. The smoke, seed, recall, failure,
+// lifecycle and size events are emitted once at every size, so the forty recall probes stay the
+// same set; the default writes the committed fixture byte for byte.
+function generate({ target = 1000, out = OUT } = {}) {
   const secrets = loadJsonl(join(REPO, 'test/corpus/secrets.jsonl'));
   const directives = loadJsonl(join(REPO, 'test/corpus/directives.jsonl'));
   const g = createState();
@@ -1444,11 +1448,11 @@ function generate() {
   const minTurns = 4;
   const maxTurns = 12;
   let guard = 0;
-  while (guard < 80) {
+  while (guard < 80 * Math.ceil(target / 1000)) {
     guard += 1;
     const byAgent = countBy(g.events, (event) => event.agent);
-    const short = AGENTS.filter((agent) => (byAgent[agent] ?? 0) < 250);
-    if (g.events.length >= 1000 && short.length === 0) break;
+    const short = AGENTS.filter((agent) => (byAgent[agent] ?? 0) < target / 4);
+    if (g.events.length >= target && short.length === 0) break;
     const agent = short[0] ?? AGENTS[g.events.length % 4];
     const turns = minTurns + (g.rng() % (maxTurns - minTurns + 1));
     emitFillerSession(g, agent, turns);
@@ -1456,10 +1460,10 @@ function generate() {
 
   const lines = g.events.map((event) => JSON.stringify(event));
   const body = `${lines.join('\n')}\n`;
-  const report = assertCoverage(g.events, secrets, directives, body);
-  mkdirSync(dirname(OUT), { recursive: true });
-  writeFileSync(OUT, body);
-  return { report, bytes: Buffer.byteLength(body), path: OUT };
+  const report = assertCoverage(g.events, secrets, directives, body, target);
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, body);
+  return { report, bytes: Buffer.byteLength(body), path: out };
 }
 
 function invokedDirectly() {
@@ -1472,7 +1476,10 @@ function invokedDirectly() {
 }
 
 if (invokedDirectly()) {
-  const result = generate();
+  const { values } = parseArgs({ options: { events: { type: 'string' }, out: { type: 'string' } } });
+  const target = Number(values.events ?? 1000);
+  if (!Number.isSafeInteger(target) || target < 1000) throw new Error('--events must be an integer of at least 1000');
+  const result = generate({ target, out: values.out ?? OUT });
   process.stdout.write(
     `${result.path} ${result.report.total} events ${result.bytes} bytes ${JSON.stringify(result.report.byAgent)}\n`,
   );
