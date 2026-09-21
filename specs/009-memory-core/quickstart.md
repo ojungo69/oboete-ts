@@ -2966,7 +2966,7 @@ tests.
   memory with a non-matching sixth row` (`:880`) adds a Japanese row that shares no trigram with the
   English prompt and asserts both that `m_fact` is returned and that `m_unrelated` is not. Retiring
   a threshold did not turn retrieval into "return everything". `searchMemories omits an unrelated
-  memory from a five-row corpus` (`:907`) is the same assertion at the size the acceptance names:
+  memory from a five-row corpus` (`:913`) is the same assertion at the size the acceptance names:
   the unrelated row takes `m_confirm`'s place rather than being added beside all five, because
   document count is what FTS5 computes its IDF from and #275 was a five-row corpus.
 - **The pack path, not only the query.** `buildPromptPack on the five-row receipt carries the three
@@ -2993,7 +2993,7 @@ tests.
   construction.
 
 What is not closed is the MMR leg, and it now has the corpus case #272 asked for. `a distinct fact
-behind fifteen candidates is not dropped as redundant` (`test/unit/retrieval.test.ts:907`) puts two
+behind fifteen candidates is not dropped as redundant` (`test/unit/retrieval.test.ts:940`) puts two
 distinct facts in closely matching words behind fifteen candidates with a budget a thousand times
 the corpus: the second is omitted as `mmr_redundant` while nothing is omitted as `budget`. At two,
 five and ten candidates the same pair is kept, so the depth is the trigger, exactly as #272
