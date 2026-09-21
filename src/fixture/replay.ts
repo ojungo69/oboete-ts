@@ -625,13 +625,10 @@ type ReplayPlan = {
 };
 
 /**
- * Why --pass-credentials is refused for this home, or null when it may run. The home's consent
- * record has to match its configuration: the worker's Workers AI catalog refresh checks only that
- * credentials are present (#333), so the replay must not hand them over without consent.
- */
-/**
- * `--pass-credentials` (#328): the refusal, or the account ids to scan for. The kept tokens join
- * `secretValues`, so SC-005 fails by name if one reaches a written surface.
+ * `--pass-credentials` (#328): why it is refused for this home, or the account ids to scan for. The
+ * home's consent record has to match its configuration: the worker's Workers AI catalog refresh
+ * checks only that credentials are present (#333). The kept tokens join `secretValues`, so SC-005
+ * fails by name if one reaches a written surface.
  */
 function passedCredentials(home: string, secretValues: { id: string; secret: string }[]): string | { id: string; secret: string }[] {
   let config;
