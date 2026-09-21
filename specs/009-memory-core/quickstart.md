@@ -2956,7 +2956,8 @@ record iterators it means were extracted to `src/transfer-records.ts` and are im
 
 T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
 rather than tuning it, and this section is the check that the list is now satisfied in the code
-rather than in intention. Everything below was run at `c5195838`.
+rather than in intention. Everything below was run at `920bebee`, the revision that carries these
+tests.
 
 - **The artifact runs.** `searchMemories returns the fact-bearing memory of a five-row corpus`
   (`test/unit/retrieval.test.ts:864`) carries the five rows of the `claude-to-codex` pair of the
@@ -2986,10 +2987,16 @@ rather than in intention. Everything below was run at `c5195838`.
   without` (`:954`) writes `[injection] threshold = 0.99` and compares results with a config that
   has none. `doctor reports a set injection.threshold as ignored` and `why still explains a
   historical below_threshold ledger row` keep the old ledger rows readable.
-- **Nothing else regressed.** `npm test` at this revision: 1,661 passing and 0 failing in the
-  parallel leg, 280 passing and 0 failing in the serial leg, exit 0. The two skips are the
-  `OBOETE_SYNC_HEAVY` bounds tests, not the artifact.
+- **Nothing else regressed.** `npm test` at this revision: 1,662 passing and 0 failing in the
+  parallel leg, 280 passing and 0 failing in the serial leg, exit 0. Three tests are skipped — the
+  two `OBOETE_SYNC_HEAVY` bounds cases, and the #272 artifact described below, which is red by
+  construction.
 
-What is not closed is the MMR leg. #272 reproduces, by probe, a distinct fact dropped once fifteen
-candidates rank above it; there is no fixture corpus case and `lambda` is unchanged. T023 stays
-open for it, so this section closes one leg of that task and not the task.
+What is not closed is the MMR leg, and it now has the corpus case #272 asked for. `a distinct fact
+behind fifteen candidates is not dropped as redundant` (`test/unit/retrieval.test.ts:907`) puts two
+distinct facts in closely matching words behind fifteen candidates with a budget a thousand times
+the corpus: the second is omitted as `mmr_redundant` while nothing is omitted as `budget`. At two,
+five and ten candidates the same pair is kept, so the depth is the trigger, exactly as #272
+describes. The test is committed skipped, the way the #275 artifact was, and the assessment of the
+fix is in `.specify/bugs/mmr-drops-distinct-facts/assessment.md`. T023 stays open for that leg, so
+this section closes one leg of the task and not the task.
