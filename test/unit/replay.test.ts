@@ -137,7 +137,7 @@ test('--pass-credentials is refused before anything starts unless the consent re
     // A refused run that made its own temporary home leaves nothing behind.
     const tmp = join(home, 'tmp');
     mkdirSync(tmp);
-    const withoutHome = { ...env, TMPDIR: tmp };
+    const withoutHome: NodeJS.ProcessEnv = { ...env, TMPDIR: tmp };
     delete withoutHome.OBOETE_HOME;
     const fresh = spawnSync(process.execPath, ['dist/oboete.mjs', 'fixture', 'replay', path, '--json', '--pass-credentials'],
       { encoding: 'utf8', timeout: 10_000, env: withoutHome });
