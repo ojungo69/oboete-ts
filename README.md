@@ -295,7 +295,8 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   native file, and 5 MiB with at most 20,000 records for a claude-mem file. A secret row that
   carries text or concepts is refused, and so is a source attached to it that carries evidence, a
   citation value, a capture root, source paths or a producing agent; a redacted source record,
-  which holds hashes and relationships only, travels in either format. Exit 2 on an invalid file.
+  which keeps its provenance metadata with those content-bearing fields cleared, travels in either
+  format. Exit 2 on an invalid file.
 - `oboete import promote <migration-record-id> --work <local-work-id>` / `oboete import promote
   --list` — promotes one imported **sharing proposal** that local classification has cleared,
   creating a pending proposal for you to approve; it is not a way to release arbitrary quarantined
