@@ -719,10 +719,13 @@ async function groupKillCheck() {
   rssDir = scratch;
   try {
     const child = wrap('wrapper', '-e', 'setInterval(() => {}, 1_000);');
+    // Half a second is long enough for this wrapper to die and its number to be handed out again,
+    // so the kill below carries the identity `wrap` saved, exactly like the cleanup path's.
+    const leader = started.at(-1).ident;
     await sleep(500);
     const inner = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, 'utf8').trim().split(/\s+/).filter((part) => part !== '').map(Number);
     assert.ok(inner.length > 0, 'the wrapper runs the command as its child');
-    killGroup(child, 'SIGKILL');
+    killGroup(child, 'SIGKILL', leader);
     assert.equal(await gone(inner[0]), true, 'the group kill reaches the command');
     assert.equal(groupAlive(child.pid), false);
     // A child that ends on its own leaves no group behind for the cleanup path to signal.
