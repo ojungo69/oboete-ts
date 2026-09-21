@@ -2952,7 +2952,7 @@ Two verifier verdicts were overturned on re-reading: T034 reads "using `src/tran
 record iterators it means were extracted to `src/transfer-records.ts` and are imported by
 `src/sync/capture.ts` and `src/sync/apply.ts`; T040's gap was an artifact its line never asked for.
 
-## E18 — the retrieval misses are closed and the closure is measured (T023)
+## E18 — the #275 leg of T023 is closed and measured
 
 T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
 rather than tuning it, and this section is the check that the list is now satisfied in the code
@@ -2964,7 +2964,10 @@ rather than in intention. Everything below was run at `c5195838`.
 - **Admission is still the index's own match.** `searchMemories still returns the fact-bearing
   memory with a non-matching sixth row` (`:880`) adds a Japanese row that shares no trigram with the
   English prompt and asserts both that `m_fact` is returned and that `m_unrelated` is not. Retiring
-  a threshold did not turn retrieval into "return everything".
+  a threshold did not turn retrieval into "return everything". `searchMemories omits an unrelated
+  memory from a five-row corpus` (`:907`) is the same assertion at the size the acceptance names:
+  the unrelated row takes `m_confirm`'s place rather than being added beside all five, because
+  document count is what FTS5 computes its IDF from and #275 was a five-row corpus.
 - **The pack path, not only the query.** `buildPromptPack on the five-row receipt carries the three
   fact strings through the trigram index` (`:977`) builds the real pack over the same five rows and
   asserts each fact string reaches its text — the pack path is where the dogfood run dropped the
@@ -2987,4 +2990,6 @@ rather than in intention. Everything below was run at `c5195838`.
   parallel leg, 280 passing and 0 failing in the serial leg, exit 0. The two skips are the
   `OBOETE_SYNC_HEAVY` bounds tests, not the artifact.
 
-What is not closed is #272, the MMR depth observation, which this task records rather than claims.
+What is not closed is the MMR leg. #272 reproduces, by probe, a distinct fact dropped once fifteen
+candidates rank above it; there is no fixture corpus case and `lambda` is unchanged. T023 stays
+open for it, so this section closes one leg of that task and not the task.

@@ -109,9 +109,11 @@ function insertSearchable(
 function seedPairCorpus(
   db: DatabaseSync,
   extra?: { id: string; title: string; body: string },
+  omit?: string,
 ): void {
   insertRepo(db, 'repo_a', '/tmp/oboete-a');
   for (const memory of PAIR_ROWS) {
+    if (memory.id === omit) continue;
     insertSearchable(db, {
       id: memory.id,
       repoId: 'repo_a',
@@ -898,6 +900,30 @@ test('searchMemories still returns the fact-bearing memory with a non-matching s
       );
       // Admission is the index's own match: a row the query does not match is not returned, which is
       // what keeps "no threshold" from meaning "everything".
+      assert.ok(!ids.includes('m_unrelated'), `the non-matching row was returned; got ${ids.join(', ')}`);
+    } finally {
+      opened.db.close();
+    }
+  });
+});
+
+// The acceptance case of T023 reads "an unrelated memory in a five-row corpus", so the unrelated
+// row takes a receipt row's place rather than being added beside all five: document count is what
+// FTS5's IDF is computed from, and #275 was a five-row corpus.
+test('searchMemories omits an unrelated memory from a five-row corpus', async () => {
+  await withTempHome((home) => {
+    const paths = oboetePaths(home);
+    const opened = openDatabase({ path: paths.db, timeoutMs: 1000 });
+    try {
+      seedPairCorpus(opened.db, {
+        id: 'm_unrelated',
+        title: '配管の設計',
+        body: '来週の会議で配管の設計を見直す。',
+      }, 'm_confirm');
+      const ids = searchMemories(opened.db, { repoId: 'repo_a', paths, query: PAIR_RECALL_PROMPT, limit: 10 })
+        .map((row) => row.id);
+      assert.equal(ids.length, new Set(ids).size, `duplicate rows returned: ${ids.join(', ')}`);
+      assert.ok(ids.includes('m_fact'), `fact-bearing memory absent; returned ${ids.join(', ') || '(none)'}`);
       assert.ok(!ids.includes('m_unrelated'), `the non-matching row was returned; got ${ids.join(', ')}`);
     } finally {
       opened.db.close();
