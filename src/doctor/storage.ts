@@ -396,7 +396,7 @@ function generationSeverity(counts: GenerationCounts): typeof degraded | typeof 
 /** `work choose` reaches a source through its binding; one with no binding needs `choose-source`. */
 function workChoiceSteps(counts: GenerationCounts): string {
   let steps = '';
-  if (counts.awaiting > counts.unbound) steps += ' Use `oboete work status` and `oboete work choose <binding-id> <work-id|new>` to resolve work choices.';
+  if (counts.awaiting > counts.unbound) steps += ' `oboete work status` lists the choices; `oboete work choose <binding-id> <work-id|new>` resolves an open binding or a late-source span.';
   if (counts.unbound > 0) steps += ' A source with no binding takes `oboete work choose-source <source-id> <work-id|new>`.';
   return steps;
 }

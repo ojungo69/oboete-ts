@@ -14,6 +14,7 @@ import { detectSync } from '../../src/privacy/detect.js';
 import { openDatabase } from '../../src/db/open.js';
 import { getMemory, memoryScope } from '../../src/db/queries.js';
 import { excludeSecretSource } from '../../src/worker/batches.js';
+import { replayTargetsSettled } from '../../src/fixture/replay.js';
 
 import { NOW, captureEndedSession, cleanEnv, openAiResponse, providerOutput, runObserveForFixture, toggleDatabase, withFixture, writeConfig, type Fixture } from '../helpers/observe.js';
 import { git } from '../helpers/git.js';
@@ -586,6 +587,32 @@ test('a previously unseen new-purpose declaration in late spool data stays unres
       assert.equal(db.prepare("SELECT work_binding_id FROM raw_events WHERE content = 'The settings use a local cache.'").get()?.work_binding_id, held.id);
     });
     assert.equal(binding(fixture, common.session_id).id, current.id);
+  });
+});
+
+test('an ended session whose only remaining sources await a work choice is still summarized (#336)', async () => {
+  await withFixture(async (fixture) => {
+    writeConfig(fixture, 'none');
+    const { main } = worktrees(fixture);
+    const common = { cwd: main, session_id: 'awaiting-summary' };
+    await fixture.capture('SessionStart', { ...common, source: 'startup' });
+    await fixture.capture('UserPromptSubmit', { ...common, prompt_id: 'first', prompt: 'Fix the upload retry.' });
+    toggleDatabase(fixture, true);
+    await fixture.capture('UserPromptSubmit', { ...common, prompt_id: 'unseen', prompt: 'New task: Clarify the settings.' }, 'spooled');
+    toggleDatabase(fixture, false);
+    await fixture.capture('UserPromptSubmit', { ...common, prompt_id: 'current', prompt: 'New task: Improve search.' });
+    await fixture.capture('SessionEnd', { ...common, reason: 'prompt_input_exit' });
+    await runObserveForFixture(fixture);
+    fixture.withDb((db) => {
+      const held = db.prepare(`SELECT r.processing_state, b.work_id FROM raw_events r
+        JOIN work_bindings b ON b.id = r.work_binding_id WHERE r.content = 'New task: Clarify the settings.'`).get()!;
+      assert.equal(held.processing_state, 'pending');
+      assert.equal(held.work_id, null);
+      const session = db.prepare(`SELECT id, repo_id, summary_updated_at FROM sessions
+        WHERE native_session_id = 'awaiting-summary'`).get()!;
+      assert.notEqual(session.summary_updated_at, null, 'a source awaiting a work choice must not hold the summary back');
+      assert.equal(replayTargetsSettled(db, String(session.repo_id), [String(session.id)]), true);
+    });
   });
 });
 
