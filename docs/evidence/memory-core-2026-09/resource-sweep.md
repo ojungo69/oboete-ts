@@ -130,9 +130,9 @@ as in the 1,000-event run.
   whole cost +49.0 MiB, one `Buffer.concat` per chunk +50.5 MiB, and the reused buffer +1.3 MiB.
   That fix is what both rows above measure.
 - The 24.x leg ran three times after #332. Two of them (v2 and v3, on `64e16e5a`) ended with the
-  harness's own error, exit 2. In both, the resident worker logged `ERR_SQLITE_ERROR` and exited
-  `storage_error` during phase B's held-reader window, 3 s and 9 s into the hold. For about 2 s
-  after that, captures from the phase B sessions went to the spool.
+  harness's own error, exit 2. In both, the resident worker logged `ERR_SQLITE_ERROR` during phase
+  B's held-reader window, 3 s and 9 s into the hold. In the 2 s it then took to exit
+  `storage_error`, captures from the phase B sessions went to the spool.
 - The cause of that SQLite error is not identified: the logs carry only node:sqlite's generic code,
   not the result code. It did not occur in the third 24.x run or in either 22.x run.
 - What made the run stop is separate and is #336. Spool recovery bound the spooled opening prompts
