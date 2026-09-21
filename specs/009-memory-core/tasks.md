@@ -513,11 +513,12 @@ writers require separate worktrees. No deployment follows merely from an increme
   Limits). That leg is closed: #304 retired the admission threshold, and E18 measures the artifact,
   a five-row false-positive case, the pack path and a replacement mutation. The MMR leg (#272) is
   closed too: MMR rejects only identical content and orders the rest (E19).
-- T024 (open, 2026-09-18): no local or external profile was qualified in 009, because activating a
-  real model is not authorised (handoff of 2026-09-10). The no-model replay gives no generated facts
-  to measure, and verbatim facts are all found lexically, so the measurement that would justify
-  semantic retrieval does not exist yet. Qualification and that decision are #266; search stays
-  lexical, with semantic search in M2 (`LEXICAL_NOTE` in `src/memories-cli.ts`).
+- T024 (open, 2026-09-21): the owner authorised a local run and one Workers AI run, and no profile
+  qualified (E20). The paraphrase corpus exists (`test/fixtures/paraphrase-queries.json`). Local
+  `gemma4:12b` validates 5-7 of 14-20 observer batches, and the failures are mis-copied event ids
+  (#329). Workers AI cannot run through the replay, which strips credentials by design (#328). So the
+  measurement that would justify semantic retrieval does not exist yet. Search stays lexical, with
+  semantic search in M2 (`LEXICAL_NOTE` in `src/memories-cli.ts`); qualification remains #266.
 - T041 (open, 2026-09-18): the twelve native ordered pairs on the 009 bundle are #265 and real-model
   Japanese and English evaluation is #266. The daily dogfood install moved from the schema 3 bundle
   to the 009 bundle on 2026-09-17 (E13), so its runs from 2026-09-18 exercise the 009 bundle; they

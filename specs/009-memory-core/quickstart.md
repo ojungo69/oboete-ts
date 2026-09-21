@@ -3051,3 +3051,57 @@ retired rows and then passes the rest to `rankCandidates` with no `limit`, so th
 the one the tests above exercise, and the budget cut after it is unchanged. #272 was reproduced as
 a fixture case and has no dogfood receipt, unlike #275: the corpus case is the evidence that the
 rule dropped distinct facts, and E12's forty fixture facts still rank where they did.
+
+## E20 — T024: the first real-model qualification attempt (2026-09-21)
+
+T024 asks for selected local and external profiles to be qualified on a paraphrase corpus before
+semantic retrieval is decided. The owner authorised a local Ollama run in an isolated home, and one
+Workers AI run if allowance remained (2026-09-21). This section records what was measured. **No
+profile qualified**, and T024 stays open.
+
+**The paraphrase corpus.** `test/fixtures/paraphrase-queries.json` rewords the forty recall
+questions of `events-1000.jsonl`. The rule: ask what a developer who remembers the topic but not
+its terms would ask, in the same language, keeping product and agent names and avoiding the fact
+sentence's own nouns. `test/fixtures/make-paraphrase-fixture.mjs <out>` writes the fixture with
+only the forty questions changed (the recall lines and the fact tags that report them); it refuses
+a question list that does not match the planted facts. How far the wording moved, as character
+n-grams shared with the fact sentence (bigrams for Japanese, trigrams for English):
+
+| | verbatim question, median shared | paraphrase, median shared | paraphrases sharing none |
+| --- | --- | --- | --- |
+| Japanese (20) | 8.5 | 0.5 | 10 |
+| English (20) | 13.5 | 3.0 | 0 |
+
+The corpus was not run end to end, because no profile got through generation (below): with most
+batches failing, retrieval numbers would measure the observer, not retrieval.
+
+**Local profile: Ollama 0.34.2, `gemma4:12b`.** The preset ships no default model. Ollama's
+default context of 4,096 tokens is too small for an observer request: the input alone may be
+12,000 characters, which is about 12,000 tokens of Japanese. So the model ran as a derived
+`num_ctx 65536` model. On the RTX 5080 (16 GB) it was 100% on the GPU and processed a
+42,608-token prompt in 18.6 s; at 32,768 the same prompt was cut to 16,387 tokens. Every figure
+below is observer batches that validated, from replays of `events-1000.jsonl`:
+
+| Build | Batches that validated | Failures |
+| --- | --- | --- |
+| `main` before #326 | 0 (doctor probe) | the model never saw the schema: `json_object` presets were sent the schema-less prompt (#326) |
+| #326 (schema in the prompt, `json_object`) | 3 of 19 | shape errors (an array past its limit filled with empty strings, a key spelled `"reason:"`, a number where an array belongs) and mis-copied ids |
+| #330 on a build that also printed validation detail through an uncommitted log patch | 7 of 20 | 12 `source_event_ids` not among the supplied ids, 1 checkpoint source not admitted, 0 shape errors |
+| #330 as committed (`f5678629`) | 5 of 14 | not visible, because the product log hides validation detail by design; the replay then stopped at `worker_settle_timeout` (5 min) on a host also running the T042 sweep |
+
+Constrained decoding (#330) removes the shape errors. What remains is a model-capability limit: a
+12B model cannot copy 64-hex event ids reliably (one was cut from 64 to 54 characters), and one
+wrong id fails the batch. #329 records the adopted design, per-request `e1..eN` / `m1..mN` aliases
+decoded before the unchanged validation. `llama3.2:1b` does not follow the schema at all (doctor
+probe `degraded`). The failed batches fall back to rule-based summaries, which is the documented
+degraded path, not data loss.
+
+**External profile: Workers AI.** It could not run through the replay. `replayEnv` builds every
+child's environment with `childEnvironment()`, which removes the oboete credential variables by
+design (FR-016). A home configured for `workers-ai` with the dogfood account's consent record
+therefore recorded 26 of 26 batches as `fallback reason=no_provider`, and no provider call was
+made (#328). The remote reference profile of SC-003 is measurable today only through the daily
+dogfood channel (T041).
+
+**Semantic retrieval.** Still not decided, because the measurement that would require it (a
+generated corpus whose paraphrase recall falls short while retention holds) does not exist yet.
