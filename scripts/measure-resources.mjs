@@ -649,8 +649,7 @@ function loadHits(dbPath, spoolDir, markers, sessionIds) {
 }
 function parseGeneration(reason) {
   const n = (re) => { const m = reason.match(re); return m === null ? Number.NaN : Number(m[1]); };
-  const awaiting = reason.match(/(\d{1,9}) awaiting a work choice/);
-  return { pending: n(/(\d{1,9}) pending/), awaiting: awaiting === null ? 0 : Number(awaiting[1]), waiting: n(/(\d{1,9}) waiting/), parked: n(/(\d{1,9}) parked/), legacy: n(/(\d{1,9}) legacy sources held/), processed: n(/(\d{1,9}) processed/) };
+  return { pending: n(/(\d{1,9}) pending/), awaiting: n(/(\d{1,9}) awaiting a work choice/), waiting: n(/(\d{1,9}) waiting/), parked: n(/(\d{1,9}) parked/), legacy: n(/(\d{1,9}) legacy sources held/), processed: n(/(\d{1,9}) processed/) };
 }
 function checkRetained(input) {
   const missing = []; const duplicate = []; const failed = [];
@@ -678,12 +677,11 @@ function checkNotStuck(input) {
   // for `processed` would be work this run cannot account for, and a run that deferred nothing at
   // all never exercised the deferral the sweep is measuring.
   // #336: this fixture never chooses work, so awaiting sources indicate a storage fault.
-  const awaiting = input.awaiting ?? 0;
-  const pass = input.pending === 0 && awaiting === 0 && input.spoolFiles === 0 && input.liveBatches === 0
+  const pass = input.pending === 0 && input.awaiting === 0 && input.spoolFiles === 0 && input.liveBatches === 0
     && input.workerErrors === 0 && (input.badEnds ?? []).length === 0
     && input.processed === 0 && input.waiting > 0
     && input.endReason === 'stopped' && input.stopMarker === false;
-  return { name: 'not-stuck', pass, ...input, awaiting, note: 'with preset none, work moves to waiting as deferred no_provider' };
+  return { name: 'not-stuck', pass, ...input, note: 'with preset none, work moves to waiting as deferred no_provider' };
 }
 function checkWal(input) {
   const grew = input.peak > input.start;
@@ -796,7 +794,7 @@ async function selfCheck() {
   const hit = (id, state, n = 1, spool = false) => ({ id, hits: Array.from({ length: n }, () => ({ classification_state: state })), spool });
   const one = { starts: 1, ends: 1, messages: 1, turnEnds: 1, failedKinds: [] };
   const sess = [{ id: 's0', ...one }];
-  const stuckOk = { pending: 0, waiting: 4, parked: 0, legacy: 0, processed: 0, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
+  const stuckOk = { pending: 0, awaiting: 0, waiting: 4, parked: 0, legacy: 0, processed: 0, spoolFiles: 0, liveBatches: 0, endReason: 'stopped', stopMarker: false, workerErrors: 0, badEnds: [] };
   assert.equal(checkRetained({ markers: [hit('a', 'done'), hit('b', 'done')], sessions: [...sess, { id: 's1', ...one }], spoolFiles: 0 }).pass, true);
   const mixed = checkRetained({ markers: [hit('miss', 'done', 0), hit('dup', 'done', 2)], sessions: sess, spoolFiles: 0 });
   assert.equal(mixed.pass, false); assert.deepEqual(mixed.missing, ['miss']); assert.deepEqual(mixed.duplicate, ['dup']);
@@ -831,7 +829,6 @@ async function selfCheck() {
   assert.equal(checkNotStuck({ ...stuckOk, processed: 1 }).pass, false, 'preset none can process nothing');
   assert.equal(checkNotStuck({ ...stuckOk, waiting: 0 }).pass, false, 'a run that deferred nothing measured no deferral');
   assert.deepEqual(parseGeneration('Retained sources: 3 pending; 9697 waiting; 4 parked; 7 incomplete captures; 5 legacy sources held; 8 privacy exclusions; 6 processed (9 recovered); 2 awaiting a work choice.'), { pending: 3, awaiting: 2, waiting: 9697, parked: 4, legacy: 5, processed: 6 });
-  assert.deepEqual(parseGeneration('Retained sources: 3 pending; 9697 waiting; 4 parked; 5 legacy sources held; 6 processed'), { pending: 3, awaiting: 0, waiting: 9697, parked: 4, legacy: 5, processed: 6 });
   assert.equal(countBatchLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0, Date.now()), 0);
   assert.equal(countErrorLines('2026-01-01T00:00:00.000Z error batch id=x state=error\n', 0), 1);
   assert.deepEqual(badEndReasons('2026-01-01T00:00:00.000Z info run end exit=1 reason=batch_error\n', 0), ['batch_error']);
