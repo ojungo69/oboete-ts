@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 import { renderReport, type BoundRow } from '../../src/fixture/replay-report.js';
 import type { FactTrace, ReportComputed } from '../../src/fixture/replay-evaluate.js';
-import { classifyStartSample, holdLease, releaseHeldLease, replayHome, replayTargetsSettled, startInjectionExpected, waitForReplaySettlement, type MeasureInput } from '../../src/fixture/replay.js';
+import { classifyStartSample, holdLease, releaseHeldLease, replayEnv, replayHome, replayTargetsSettled, runChild, startInjectionExpected, waitForReplaySettlement, type MeasureInput } from '../../src/fixture/replay.js';
 import { openDatabase } from '../../src/db/open.js';
 import { oboetePaths } from '../../src/paths.js';
 import { withTempHome } from '../helpers/home.js';
@@ -111,6 +111,90 @@ test('replay refuses foreign active sources before starting a worker or printing
   });
 });
 
+function shortReplayFixture(home: string): string {
+  const fixture = readFileSync('test/fixtures/events-1000.jsonl', 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const lines = [...fixture.slice(0, 3), fixture.find((line) => line.event === 'SessionEnd')];
+  const path = join(home, 'replay.jsonl');
+  writeFileSync(path, lines.map((line, index) => JSON.stringify({ ...line, seq: index + 1 })).join('\n'));
+  return path;
+}
+
+test('--pass-credentials is refused before anything starts unless the consent record matches (#328)', async () => {
+  await withTempHome((home) => {
+    const path = shortReplayFixture(home);
+    const env = { ...process.env, OBOETE_CF_API_TOKEN: 'fake-token-0123456789', OBOETE_CF_ACCOUNT_ID: 'fake-account-0123456789' };
+    const replay = (...flags: string[]) => spawnSync(process.execPath,
+      ['dist/oboete.mjs', 'fixture', 'replay', path, '--home', home, '--json', ...flags], { encoding: 'utf8', timeout: 10_000, env });
+    for (const consent of ['', '[consent]\nhash = "0000"\n']) {
+      writeFileSync(join(home, 'config.toml'), `[observer]\npreset = "workers-ai"\n${consent}`);
+      const refused = replay('--pass-credentials');
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.match(refused.stderr, /--pass-credentials: the consent record .* does not match its workers-ai configuration/);
+      assert.equal(`${refused.stdout}${refused.stderr}`.includes('fake-'), false, 'no credential value is printed');
+      assert.equal(existsSync(oboetePaths(home).db), false, 'no hook or worker may start');
+    }
+    // Without the flag the same home is not gated here: it reaches the replay's own readiness check.
+    const { db } = openDatabase({ path: oboetePaths(home).db, timeoutMs: 1_000 });
+    try {
+      db.exec(`INSERT INTO repos (id, identity_kind, normalized_identity) VALUES ('foreign', 'common_dir', '/foreign');
+        INSERT INTO sessions (id, repo_id, agent, native_session_id, conversation_id, status)
+          VALUES ('foreign-session', 'foreign', 'claude', 'foreign-native', 'foreign-session', 'active');
+        INSERT INTO raw_events (id, repo_id, session_id, kind, content, classification_state)
+          VALUES ('foreign-source', 'foreign', 'foreign-session', 'prompt', 'Pending external work', 'done');`);
+    } finally { db.close(); }
+    const stripped = replay();
+    assert.equal(stripped.status, 1, stripped.stderr);
+    assert.match(stripped.stderr, /foreign_active_sources/);
+  });
+});
+
+test('replayEnv strips oboete credentials unless --pass-credentials keeps them', () => {
+  const names = ['OBOETE_CF_API_TOKEN', 'OBOETE_CF_ACCOUNT_ID', 'OBOETE_X_API_KEY', 'OBOETE_TEST_FAULT'];
+  const previous = names.map((name) => process.env[name]);
+  for (const name of names) process.env[name] = 'value-0123456789';
+  try {
+    const stripped = replayEnv('/replay-home');
+    const kept = replayEnv('/replay-home', {}, true);
+    for (const name of names.slice(0, 3)) {
+      assert.equal(stripped[name], undefined, name);
+      assert.equal(kept[name], 'value-0123456789', name);
+    }
+    for (const env of [stripped, kept]) {
+      assert.equal(env.OBOETE_HOME, '/replay-home');
+      assert.equal(env.NODE_ENV, 'test');
+      assert.equal(env.OBOETE_TEST_FAULT, undefined);
+    }
+  } finally {
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+  }
+});
+
+test('runChild scrubs a credential a child prints, on success and failure, and says it did', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oboete-child-'));
+  try {
+    const script = join(dir, 'child.mjs');
+    writeFileSync(script, `process.stdout.write(JSON.stringify({ hookSpecificOutput: {}, other: process.env.OBOETE_CF_API_TOKEN ?? 'none' }));
+process.stderr.write('token ' + (process.env.OBOETE_CF_API_TOKEN ?? 'none'));
+process.exitCode = Number(process.argv[2]);`);
+    const env = { ...process.env, OBOETE_CF_API_TOKEN: 'fake-token-0123456789' };
+    for (const code of [0, 1]) {
+      const spawned = await runChild(script, [String(code)], '', dir, env, 5_000);
+      assert.equal(spawned.status, code);
+      assert.equal(spawned.credentialInOutput, true);
+      assert.equal(`${spawned.stdout}${spawned.stderr}`.includes('fake-token'), false);
+      assert.equal(spawned.stderr, 'token [credential]');
+    }
+    const clean = await runChild(script, ['0'], '', dir, replayEnv(dir), 5_000);
+    assert.equal(clean.credentialInOutput, false);
+    assert.equal(clean.stderr, 'token none');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function withEnv(value: string | undefined, run: () => void): void {
   const before = process.env.OBOETE_HOME;
   if (value === undefined) delete process.env.OBOETE_HOME;
@@ -183,6 +267,7 @@ test('renderer preserves the report sections, supplied bounds, and failure evide
     packs: [],
     recallProbes: [],
     hookFailures: [{ seq: 1, agent: 'codex', event: 'SessionStart', status: '1', stderr: 'left | right' }],
+    credentials: { accountIds: [], inOutput: 0 },
     hookCount: 1,
     resumeChecks: [],
     maps: {

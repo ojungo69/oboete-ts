@@ -20,7 +20,8 @@ import { INJECTION_DEADLINE_MS, hookDeadlineMs } from '../capture.js';
 import { isBusyError, openDatabase } from '../db/open.js';
 import { deliveredFactItems, measure, nativeSessionId, sessionStartEvent } from './replay-evaluate.js';
 import { HEADING, fileBytes, repositoryRoot } from './replay-report.js';
-import { childEnvironment } from '../log.js';
+import { consentMatches, loadConfig } from '../config.js';
+import { childEnvironment, credentialEntries, scrubCredentials } from '../log.js';
 import { ensureDirectories, oboetePaths } from '../paths.js';
 import { claimLease, heartbeat, releaseLease } from '../worker/lease.js';
 import { SUMMARIZABLE_ROW_SQL } from '../worker/batches.js';
@@ -77,6 +78,8 @@ type Spawned = {
   stdout: string;
   stderr: string;
   elapsedMs: number;
+  /** The child printed a credential value, which `stdout`/`stderr` no longer hold (#328). */
+  credentialInOutput: boolean;
 };
 export type Sample = { agent: Agent; event: string; seq: number; session: string; ms: number; injectionId?: string };
 export type InjectionSnapshot = { id: string; state: string | null; degradedReason: string | null; hash: string | null };
@@ -185,8 +188,12 @@ function bundlePath(): string {
 function usage(): string {
   return (
     'Usage: oboete fixture replay <file> [--out <markdown file>] [--json] [--home <dir>] [--keep]\n'
+    + '       [--pass-credentials]\n'
     + '--out replaces the "## Fixture replay (T068)" section of a Markdown file that already\n'
     + 'exists and already has that heading; it does not create the file.\n'
+    + '--pass-credentials keeps oboete\'s credential variables for the replay\'s own hooks and\n'
+    + 'workers, so a remote preset can be evaluated. It is refused unless the home\'s consent\n'
+    + 'record matches its configuration. Off by default: the replay strips them.\n'
   );
 }
 
@@ -230,8 +237,8 @@ function packText(stdout: string): string {
   return stdout;
 }
 
-function replayEnv(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env = childEnvironment(process.env);
+export function replayEnv(home: string, extra: NodeJS.ProcessEnv = {}, passCredentials = false): NodeJS.ProcessEnv {
+  const env = passCredentials ? { ...process.env } : childEnvironment(process.env);
   delete env.OBOETE_TEST_FAULT;
   delete env.OBOETE_TEST_FAULT_URL;
   delete env.GROK_HOOK_EVENT;
@@ -275,7 +282,7 @@ function hookViolated(spawned: Spawned): boolean {
   return spawned.timedOut || spawned.signal !== null || spawned.status !== 0;
 }
 
-function runChild(
+export function runChild(
   bundle: string,
   args: string[],
   input: string,
@@ -294,13 +301,18 @@ function runChild(
       maxBuffer: 16 * 1024 * 1024,
       killSignal: 'SIGTERM',
     }, (error, stdout, stderr) => {
+      // Everything the replay keeps or reports from a child is scrubbed; without --pass-credentials
+      // the child's environment holds no credential and this changes nothing.
+      const out = scrubCredentials(stdout, env);
+      const err = scrubCredentials(stderr, env);
       resolvePromise({
         status: child.exitCode,
         signal: child.signalCode,
         timedOut: child.killed && error?.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
-        stdout,
-        stderr,
+        stdout: out,
+        stderr: err,
         elapsedMs: performance.now() - started,
+        credentialInOutput: out !== stdout || err !== stderr,
       });
     });
     // T068 / FR-002: a bounded-input hook can exit before consuming all of a size-tagged payload.
@@ -602,7 +614,7 @@ function corpus(root: string): {
 }
 
 type ReplayPlan = {
-  values: { out?: string; json?: boolean; home?: string; keep?: boolean };
+  values: { out?: string; json?: boolean; home?: string; keep?: boolean; 'pass-credentials'?: boolean };
   fixturePath: string;
   outPath: string | undefined;
   root: string;
@@ -610,6 +622,22 @@ type ReplayPlan = {
   lines: Line[];
   sessionWindows: ReturnType<typeof lastSessions>;
 };
+
+/**
+ * Why --pass-credentials is refused for this home, or null when it may run. The home's consent
+ * record has to match its configuration: the worker's Workers AI catalog refresh checks only that
+ * credentials are present (#333), so the replay must not hand them over without consent.
+ */
+export function passCredentialsRefusal(home: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  let config;
+  try {
+    config = loadConfig(oboetePaths(home));
+  } catch (error) {
+    return `--pass-credentials: the configuration in ${home} cannot be read (${error instanceof Error ? error.message : String(error)})`;
+  }
+  if (consentMatches(config, env)) return null;
+  return `--pass-credentials: the consent record in ${home} does not match its ${config.observer.preset} configuration, so the credentials are not passed`;
+}
 
 /** `oboete fixture replay <file>` and its flags; a number is the exit code it stops with. */
 function replayArgv(argv: string[]): { values: ReplayPlan['values']; fixture: string } | number {
@@ -624,6 +652,7 @@ function replayArgv(argv: string[]): { values: ReplayPlan['values']; fixture: st
         json: { type: 'boolean' },
         home: { type: 'string' },
         keep: { type: 'boolean' },
+        'pass-credentials': { type: 'boolean' },
       },
     });
   } catch (error) {
@@ -720,6 +749,7 @@ type ReplayRun = {
   hookFailures: HookFailure[];
   resumeChecks: ResumeCheck[];
   hookCount: number;
+  credentials: MeasureInput['credentials'];
   observeRssKb: number;
   observeRuns: number;
   hookWorkerRssKb: number;
@@ -753,6 +783,7 @@ function emptyTables(): Omit<
     hookFailures: [],
     resumeChecks: [],
     hookCount: 0,
+    credentials: { accountIds: [], inOutput: 0 },
     observeRssKb: 0,
     observeRuns: 0,
     hookWorkerRssKb: 0,
@@ -817,6 +848,7 @@ function recordPack(run: ReplayRun, line: Line, stdout: string): void {
 /** Counts the hook and keeps the ones that broke the contract. */
 function recordHook(run: ReplayRun, line: Line, spawned: Spawned, eventLabel: string): void {
   run.hookCount += 1;
+  if (spawned.credentialInOutput) run.credentials.inOutput += 1;
   if (!hookViolated(spawned)) return;
   run.hookFailures.push({
     seq: line.seq,
@@ -1112,7 +1144,7 @@ async function runHookLine(
 ): Promise<Spawned> {
   const input = JSON.stringify(payload);
   const { args, extra } = hookArgs({ ...line, payload });
-  const env = replayEnv(run.home, extra);
+  const env = { ...run.envBase, ...extra };
   const timeoutMs = injection ? 15_000 : 10_000;
   const hooked = await runChild(run.bundle, args, input, run.repo, env, timeoutMs);
   recordHook(run, line, hooked, line.event);
@@ -1291,13 +1323,29 @@ export async function runFixture(argv: string[]): Promise<number> {
 
   const maps = corpus(root);
   const { home, createdHome } = replayHome(values);
+  const passCredentials = values['pass-credentials'] === true;
+  const refusal = passCredentials ? passCredentialsRefusal(home) : null;
+  if (refusal !== null) {
+    process.stderr.write(`${refusal}\n`);
+    return 2;
+  }
+  const accountIds: { id: string; secret: string }[] = [];
+  if (passCredentials) {
+    // The kept values become scan targets, so SC-005 fails by name if one reaches a written surface.
+    const kept = credentialEntries(process.env);
+    for (const [name, secret] of kept) {
+      (name === 'OBOETE_CF_ACCOUNT_ID' ? accountIds : maps.secretValues).push({ id: `credential:${name}`, secret });
+    }
+    process.stderr.write(`--pass-credentials: the replay's hooks and workers keep ${kept.map(([name]) => name).join(', ') || 'no credential variable'}\n`);
+  }
   const repo = mkdtempSync(join(tmpdir(), 'oboete-t068-repo-'));
   const keep = values.keep === true;
   const paths = oboetePaths(home);
-  const envBase = replayEnv(home);
+  const envBase = replayEnv(home, {}, passCredentials);
   const startedAt = new Date().toISOString();
   const loadAtStart = loadAverage();
   const run = createRun({ bundle, repo, home, envBase, paths, lines, maps, sessionWindows });
+  run.credentials.accountIds = accountIds;
   let workerPollDb: ReturnType<typeof openDatabase>['db'] | undefined;
   let workerPoll: ReturnType<typeof setInterval> | undefined;
   try {
@@ -1394,6 +1442,12 @@ export type MeasureInput = {
       recallProbes: RecallProbe[];
     hookFailures: HookFailure[];
     hookCount: number;
+    /**
+     * --pass-credentials (#328): the Cloudflare account id kept for the children, which is scanned
+     * apart from the tokens because the catalog cache stores it by design, and how many child
+     * outputs printed a credential value.
+     */
+    credentials: { accountIds: { id: string; secret: string }[]; inOutput: number };
     resumeChecks: ResumeCheck[];
     maps: ReturnType<typeof corpus>;
     observeRssKb: number;

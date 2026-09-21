@@ -31,13 +31,17 @@ export function scrubCredentials(text: string, env: NodeJS.ProcessEnv = process.
  */
 const MIN_CREDENTIAL_LENGTH = 8;
 
-/** The values of the credential variables, longest first so a value that contains another one is replaced whole. */
-export function credentialValues(env: NodeJS.ProcessEnv): string[] {
+/** The credential variables that hold a value long enough to be a real credential, as `[name, trimmed value]`. */
+export function credentialEntries(env: NodeJS.ProcessEnv): [string, string][] {
   return Object.entries(env)
     .filter(([name]) => isCredentialVariable(name))
-    .map(([, value]) => value?.trim() ?? '')
-    .filter((value) => value.length >= MIN_CREDENTIAL_LENGTH)
-    .sort((a, b) => b.length - a.length);
+    .map(([name, value]): [string, string] => [name, value?.trim() ?? ''])
+    .filter(([, value]) => value.length >= MIN_CREDENTIAL_LENGTH);
+}
+
+/** The values of the credential variables, longest first so a value that contains another one is replaced whole. */
+export function credentialValues(env: NodeJS.ProcessEnv): string[] {
+  return credentialEntries(env).map(([, value]) => value).sort((a, b) => b.length - a.length);
 }
 
 type LogValue = string | number | boolean;

@@ -181,6 +181,7 @@ test('completed-run evaluation reads the migrated database and returns every ver
             recallProbes: [],
         hookFailures: [],
         hookCount: 1,
+        credentials: { accountIds: [], inOutput: 0 },
         resumeChecks: [],
         maps: { secrets: new Map(), secretValues: [], negatives: [], directives: [] },
         observeRssKb: 0,
@@ -272,6 +273,33 @@ test('completed-run evaluation reads the migrated database and returns every ver
         { id: 'clean', secret: 'NEVER-WRITTEN-3' }, { id: 'db', secret: 'STORED-SECRET-4' }, { id: 'spool', secret: 'SPOOLED-SECRET-5' },
         { id: 'bytes', secret: 'LONE-\ud800' }] } });
       assert.deepEqual((leaky.json.secrets as { leaked: string[] }).leaked, ['log', 'pack', 'db', 'spool', 'bytes']);
+
+      // --pass-credentials (#328): a child that printed a credential, and the account id anywhere but the catalog cache.
+      const leakedWith = (credentials: MeasureInput['credentials']) => {
+        const json = measure(opened, paths, { ...input, credentials }).json as { secrets: { leaked: string[] }; bounds: { sc: string; status: string }[] };
+        return { leaked: json.secrets.leaked, sc005: json.bounds.find((row) => row.sc === 'SC-005')?.status };
+      };
+      assert.deepEqual(leakedWith({ accountIds: [], inOutput: 1 }), { leaked: ['credential:child-output'], sc005: 'fail' });
+      const account = { id: 'credential:OBOETE_CF_ACCOUNT_ID', secret: 'acct-0123456789abcdef' };
+      opened.db.prepare("INSERT INTO runtime_state (key, value_json, updated_at) VALUES ('workers_ai_catalog', ?, 0)")
+        .run(JSON.stringify({ accountId: account.secret }));
+      assert.deepEqual(leakedWith({ accountIds: [account], inOutput: 0 }), { leaked: [], sc005: 'pass' },
+        'the catalog cache holds the account id by design');
+      const placements: [string, string, string][] = [
+        ['another runtime_state row', "INSERT INTO runtime_state (key, value_json, updated_at) VALUES ('other', ?, 0)",
+          "DELETE FROM runtime_state WHERE key = 'other'"],
+        ['a raw event', "INSERT INTO raw_events (id, repo_id, session_id, kind, content, classification_state) VALUES ('acct', 'r-a', 's-a', 'prompt', ?, 'done')",
+          "DELETE FROM raw_events WHERE id = 'acct'"],
+        ['a memory body', "INSERT INTO memories (id, repo_id, type, title, body, content_hash, sensitivity) VALUES ('acct', 'r-a', 'decision', 'Account', ?, 'acct-hash', 'eligible')",
+          "DELETE FROM memories WHERE id = 'acct'"],
+      ];
+      for (const [where, insert, remove] of placements) {
+        opened.db.prepare(insert).run(`account ${account.secret}`);
+        assert.deepEqual(leakedWith({ accountIds: [account], inOutput: 0 }), { leaked: [account.id], sc005: 'fail' }, where);
+        opened.db.exec(remove);
+      }
+      writeFileSync(join(paths.logs, 'account.log'), account.secret);
+      assert.deepEqual(leakedWith({ accountIds: [account], inOutput: 0 }), { leaked: [account.id], sc005: 'fail' }, 'a log');
     } finally {
       opened.db.close();
     }

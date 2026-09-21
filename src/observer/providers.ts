@@ -14,6 +14,7 @@ import {
   type OboeteConfig,
   type PresetName,
 } from '../config.js';
+import { childEnvironment } from '../log.js';
 import { observerOutputJsonSchema } from './contract.js';
 
 export class ProviderConfigError extends Error {
@@ -209,12 +210,8 @@ async function runChild(
   spawnFn: typeof spawn,
 ): Promise<ProcessResult> {
   const signal = AbortSignal.timeout(Math.max(1, timeoutMs));
-  const env = { ...process.env };
-  delete env.OBOETE_CF_API_TOKEN;
-  delete env.OBOETE_CF_ACCOUNT_ID;
-  for (const preset of Object.values(PRESET_CATALOG)) {
-    if (preset.credential.kind === 'api-key') delete env[preset.credential.envName];
-  }
+  // FR-016: every oboete credential variable, including a preset key this build does not know.
+  const env = childEnvironment(process.env);
   return await new Promise<ProcessResult>((resolve) => {
     let child: ReturnType<typeof nodeSpawn>;
     try {
