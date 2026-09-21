@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -133,6 +133,15 @@ test('--pass-credentials is refused before anything starts unless the consent re
       assert.equal(`${refused.stdout}${refused.stderr}`.includes('fake-'), false, 'no credential value is printed');
       assert.equal(existsSync(oboetePaths(home).db), false, 'no hook or worker may start');
     }
+    // A refused run that made its own temporary home leaves nothing behind.
+    const tmp = join(home, 'tmp');
+    mkdirSync(tmp);
+    const withoutHome = { ...env, TMPDIR: tmp };
+    delete withoutHome.OBOETE_HOME;
+    const fresh = spawnSync(process.execPath, ['dist/oboete.mjs', 'fixture', 'replay', path, '--json', '--pass-credentials'],
+      { encoding: 'utf8', timeout: 10_000, env: withoutHome });
+    assert.equal(fresh.status, 2, fresh.stderr);
+    assert.deepEqual(readdirSync(tmp), []);
     // Without the flag the same home is not gated here: it reaches the replay's own readiness check.
     const { db } = openDatabase({ path: oboetePaths(home).db, timeoutMs: 1_000 });
     try {
@@ -149,9 +158,10 @@ test('--pass-credentials is refused before anything starts unless the consent re
 });
 
 test('replayEnv strips oboete credentials unless --pass-credentials keeps them', () => {
-  const names = ['OBOETE_CF_API_TOKEN', 'OBOETE_CF_ACCOUNT_ID', 'OBOETE_X_API_KEY', 'OBOETE_TEST_FAULT'];
+  const names = ['OBOETE_CF_API_TOKEN', 'OBOETE_CF_ACCOUNT_ID', 'OBOETE_X_API_KEY', 'OBOETE_TEST_FAULT', 'OBOETE_SHORT_API_KEY'];
   const previous = names.map((name) => process.env[name]);
   for (const name of names) process.env[name] = 'value-0123456789';
+  process.env.OBOETE_SHORT_API_KEY = 'short';
   try {
     const stripped = replayEnv('/replay-home');
     const kept = replayEnv('/replay-home', {}, true);
@@ -159,6 +169,7 @@ test('replayEnv strips oboete credentials unless --pass-credentials keeps them',
       assert.equal(stripped[name], undefined, name);
       assert.equal(kept[name], 'value-0123456789', name);
     }
+    assert.equal(kept.OBOETE_SHORT_API_KEY, undefined, 'only the values SC-005 scans for are kept');
     for (const env of [stripped, kept]) {
       assert.equal(env.OBOETE_HOME, '/replay-home');
       assert.equal(env.NODE_ENV, 'test');

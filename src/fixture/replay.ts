@@ -238,7 +238,8 @@ function packText(stdout: string): string {
 }
 
 export function replayEnv(home: string, extra: NodeJS.ProcessEnv = {}, passCredentials = false): NodeJS.ProcessEnv {
-  const env = passCredentials ? { ...process.env } : childEnvironment(process.env);
+  // Kept values are exactly the ones SC-005 scans for: long enough to be a real credential.
+  const env = { ...childEnvironment(process.env), ...(passCredentials ? Object.fromEntries(credentialEntries(process.env)) : {}) };
   delete env.OBOETE_TEST_FAULT;
   delete env.OBOETE_TEST_FAULT_URL;
   delete env.GROK_HOOK_EVENT;
@@ -628,15 +629,27 @@ type ReplayPlan = {
  * record has to match its configuration: the worker's Workers AI catalog refresh checks only that
  * credentials are present (#333), so the replay must not hand them over without consent.
  */
-function passCredentialsRefusal(home: string): string | null {
+/**
+ * `--pass-credentials` (#328): the refusal, or the account ids to scan for. The kept tokens join
+ * `secretValues`, so SC-005 fails by name if one reaches a written surface.
+ */
+function passedCredentials(home: string, secretValues: { id: string; secret: string }[]): string | { id: string; secret: string }[] {
   let config;
   try {
     config = loadConfig(oboetePaths(home));
   } catch (error) {
     return `--pass-credentials: the configuration in ${home} cannot be read (${error instanceof Error ? error.message : String(error)})`;
   }
-  if (consentMatches(config, process.env)) return null;
-  return `--pass-credentials: the consent record in ${home} does not match its ${config.observer.preset} configuration, so the credentials are not passed`;
+  if (!consentMatches(config, process.env)) {
+    return `--pass-credentials: the consent record in ${home} does not match its ${config.observer.preset} configuration, so the credentials are not passed`;
+  }
+  const accountIds: { id: string; secret: string }[] = [];
+  const kept = credentialEntries(process.env);
+  for (const [name, secret] of kept) {
+    (name === 'OBOETE_CF_ACCOUNT_ID' ? accountIds : secretValues).push({ id: `credential:${name}`, secret });
+  }
+  process.stderr.write(`--pass-credentials: the replay's hooks and workers keep ${kept.map(([name]) => name).join(', ') || 'no credential variable'}\n`);
+  return accountIds;
 }
 
 /** `oboete fixture replay <file>` and its flags; a number is the exit code it stops with. */
@@ -1324,19 +1337,11 @@ export async function runFixture(argv: string[]): Promise<number> {
   const maps = corpus(root);
   const { home, createdHome } = replayHome(values);
   const passCredentials = values['pass-credentials'] === true;
-  const refusal = passCredentials ? passCredentialsRefusal(home) : null;
-  if (refusal !== null) {
-    process.stderr.write(`${refusal}\n`);
+  const accountIds = passCredentials ? passedCredentials(home, maps.secretValues) : [];
+  if (typeof accountIds === 'string') {
+    process.stderr.write(`${accountIds}\n`);
+    if (createdHome) rmSync(home, { recursive: true, force: true });
     return 2;
-  }
-  const accountIds: { id: string; secret: string }[] = [];
-  if (passCredentials) {
-    // The kept values become scan targets, so SC-005 fails by name if one reaches a written surface.
-    const kept = credentialEntries(process.env);
-    for (const [name, secret] of kept) {
-      (name === 'OBOETE_CF_ACCOUNT_ID' ? accountIds : maps.secretValues).push({ id: `credential:${name}`, secret });
-    }
-    process.stderr.write(`--pass-credentials: the replay's hooks and workers keep ${kept.map(([name]) => name).join(', ') || 'no credential variable'}\n`);
   }
   const repo = mkdtempSync(join(tmpdir(), 'oboete-t068-repo-'));
   const keep = values.keep === true;
