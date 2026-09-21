@@ -2956,7 +2956,7 @@ record iterators it means were extracted to `src/transfer-records.ts` and are im
 
 T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
 rather than tuning it, and this section is the check that the list is now satisfied in the code
-rather than in intention. Everything below was run at `920bebee`, the revision that carries these
+rather than in intention. Everything below was run at `92aad5b1`, the revision that carries these
 tests.
 
 - **The artifact runs.** `searchMemories returns the fact-bearing memory of a five-row corpus`
@@ -2987,7 +2987,7 @@ tests.
   without` (`:1012`) writes `[injection] threshold = 0.99` and compares results with a config that
   has none. `doctor reports a set injection.threshold as ignored` and `why still explains a
   historical below_threshold ledger row` keep the old ledger rows readable.
-- **Nothing else regressed.** `npm test` at this revision: 1,662 passing and 0 failing in the
+- **Nothing else regressed.** `npm test` at this revision: 1,663 passing and 0 failing in the
   parallel leg, 280 passing and 0 failing in the serial leg, exit 0. Three tests are skipped — the
   two `OBOETE_SYNC_HEAVY` bounds cases, and the #272 artifact described below, which is red by
   construction.
