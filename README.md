@@ -216,7 +216,8 @@ oboete doctor --json
 
 `--probe-provider` makes a live summarizer call. Most outcomes settle in one attempt; a retryable
 HTTP failure or an unusable, empty or truncated answer is retried once, so a probe can cost two
-attempts against the daily cap when the preset is capped. It can also send nothing at all —
+attempts against the daily cap when the preset is capped. An answer over 1 MB is refused without a
+retry. It can also send nothing at all —
 a missing configuration, a consent mismatch or an exhausted allowance is reported before any
 request. Without the flag, the `provider` item reports what it can decide from configuration alone
 and otherwise quotes the last worker outcome. `--no-probe-agents` skips the headless wiring probe;
@@ -288,7 +289,9 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   native formats; a `--from claude-mem` file is one JSON object, read whole and adapted. **A
   format 2 file and a claude-mem file are previewed unless you pass `--apply`**; only the older
   format 1 applies by default. Since export now writes format 2, a restore is
-  `oboete import backup.jsonl --apply`.
+  `oboete import backup.jsonl --apply` — into a database that already exists at the current schema.
+  A format 2 apply checks the destination first and exits 2 with `destination_schema_not_ready`
+  when it is missing, behind or ahead, so run `oboete setup` on a new machine before restoring.
   Newly inserted readable memories land quarantined, at `local_only` or stricter and
   `review_state = imported`, and stay out of search and injection until the worker classifies them;
   a row that matches a memory you already have keeps your review state, and an incoming label never
@@ -317,13 +320,18 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   for them. A repository identifier in the
   tool arguments is refused (JSON-RPC `-32602`); extra command arguments exit 2; otherwise exit 0
   when stdin closes. Pi keeps its own narrower surface of three tools.
+- The status surfaces are listings, not inventories: `work status` returns at most 50 work items and
+  50 bindings even with `--all`, `share status` at most 50 proposals, and `sync status` at most 200
+  conflicts, withheld origins and unmapped repositories each. Each says that more exist.
 
 `oboete observe` is the detached worker (a hook starts it when work is queued, and by default it
 stays resident until fifteen minutes idle). `oboete sync init <dir>`, `join`, `push`, `pull`,
 `status`, `resolve`, `key show`, `map-repo` and `leave` move memories between your own machines
 through encrypted bundles in a shared directory; there is no network transport. The directory has
 to exist already and may not sit inside — or contain — your oboete home, `key show` and `join`
-need a terminal, and a pull reads at most 32 other replicas' bundles. A new space syncs the
+need a terminal, and a pull reads at most 32 other replicas' bundles. A push writes the whole
+revision log as one snapshot and refuses it rather than splitting it when it passes a bound: 256
+MiB of plaintext, 4 MiB for a single line, a million revisions, or 4,096 repositories. A new space syncs the
 `eligible`, `local_only` and `private` classes unless `--classes` narrows it.
 
 ## Privacy model
@@ -341,12 +349,15 @@ without its text. Claude and Pi supply both.
 A hook keeps at most 256 KiB of the event from standard input — it reads one byte further only to
 know that there was more — and it does this on every invocation, so replaying an oversized event
 truncates it again. What happens to the retained prefix depends on it. If it is still valid JSON,
-capture takes the ordinary path and marks the row truncated. If it is not, the row is stored as a
+capture takes the ordinary path and the row is stored like any other — it carries no truncation
+marker, because only the unparsed path records one. If it is not, the row is stored as a
 partial capture, whose truncated text is kept out of the summarizer and never promoted into a
 memory. If the session identifier itself fell beyond the prefix, nothing is stored at all and a
 counter is incremented instead. In the partial case the metadata is not withheld the way the text
 is — the paths a readable prefix named can still reach a rule-based change record or a session
-summary — so read the guarantee as one about the text.
+summary — so read the guarantee as one about the text. An event well under that bound can lose
+content too: a tool call keeps at most 20,000 characters of its input text and at most 50 of its
+paths, and the rest is dropped before the row is written.
 Repository rules in `.oboete.toml` are bounded too: at most 64 entries of at most 256 characters
 each.
 
@@ -401,7 +412,9 @@ than one active work item and nothing says which one you mean, work selection is
 than guessed: `oboete work status` shows the choice and `oboete work choose <binding-id>
 <work-id|new>` makes it. `oboete share status`, `share approve` and `share reject` decide the
 personal proposals. `share adopt <memory-id>` is a different move: it takes a memory of the work
-you have selected and widens it to the whole project.
+you have selected and widens it to the whole project — and it needs
+`--binding <binding-id>` in exactly the case above, since without a single active work item there
+is no selection to widen.
 
 **What leaves the machine.** Only after the consent screen, and only `eligible` rows plus an
 opaque repository id, to the destination host of the consented remote preset (Cloudflare
@@ -561,10 +574,14 @@ Implemented and verified here is not the same as qualified. At this version:
 - **Agent coverage is uneven.** Codex records a turn end without the final assistant message,
   because its hook is not given one. Compaction summary text is missing for both Codex and Grok
   Build, whose contracts carry the event without a summary field. Claude and Pi supply both.
-- **Ordered multi-agent continuation is covered synthetically.** The hand-off between two agents is
-  exercised by generated pairs rather than by two native agents running in sequence (#265).
-- **Recall against a real summarizer is not measured.** The evaluation runs with no provider, so
-  the recorded figure is what the rules alone produce, not what a model would.
+- **Work continuation between agents is not checked natively.** The daily run does launch two
+  native agents in sequence, but it asserts only that the seeded facts reach the receiving agent.
+  That the receiving agent is given the selected work item and its checkpoint, and no unrelated
+  one, is exercised by generated pairs (#265).
+- **Recall against a real summarizer is measured only by that daily run, and it is failing.** The
+  evaluation in this repository runs with no provider, so its figure (0 of 40) is what the rules
+  alone produce. The daily run on the isolated account does use one: on this bundle it passes 1 of
+  12 agent pairs, against 12 of 12 on the previous bundle the day before (#274).
 - **Scale and long-run behaviour are open.** The resource sweep replays about a thousand events in
   roughly four minutes and then holds a reader open for 24.9 seconds against the resident worker;
   ten thousand and a hundred thousand events are #267, and seven days of real use is #268. Nothing
