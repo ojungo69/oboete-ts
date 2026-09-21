@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { openDatabase } from '../../src/db/open.js';
-import { deliveredFactItems, evaluateRecall, measure } from '../../src/fixture/replay-evaluate.js';
+import { deliveredFactItems, evaluateRecall, measure, secretsInFiles } from '../../src/fixture/replay-evaluate.js';
 import type { Line, MeasureInput, RecallProbe, Sample } from '../../src/fixture/replay.js';
 import { ensureDirectories, oboetePaths } from '../../src/paths.js';
 import { withTempHome } from '../helpers/home.js';
@@ -258,8 +260,59 @@ test('completed-run evaluation reads the migrated database and returns every ver
       const checks = scoped.json.lifecycle as { check: string; pass: boolean }[];
       assert.equal(checks.find((check) => check.check === 'compact')?.pass, true,
         'the replay repository must use its own lifecycle despite another repo sharing the native ID');
+
+      writeFileSync(join(paths.logs, 'observe.log'), 'batch failed: token LOGGED-SECRET-1\n');
+      writeFileSync(join(paths.spool, 'queued.json'), '{"text":"SPOOLED-SECRET-5"}');
+      opened.db.exec(`INSERT INTO raw_events (id, repo_id, session_id, kind, content, classification_state)
+        VALUES ('leak', 'r-a', 's-a', 'prompt', 'STORED-SECRET-4', 'done')`);
+      // The packs are searched as UTF-8 bytes, as the files are: a lone surrogate encodes as U+FFFD.
+      const leaky = measure(opened, paths, { ...input, packs: [{ seq: 1, agent: 'codex', session: 'codex-01', event: 'SessionStart',
+        text: 'pack says PACKED-SECRET-2 and LONE-\ufffd', injectionIds: [] }],
+      maps: { ...input.maps, secretValues: [{ id: 'log', secret: 'LOGGED-SECRET-1' }, { id: 'pack', secret: 'PACKED-SECRET-2' },
+        { id: 'clean', secret: 'NEVER-WRITTEN-3' }, { id: 'db', secret: 'STORED-SECRET-4' }, { id: 'spool', secret: 'SPOOLED-SECRET-5' },
+        { id: 'bytes', secret: 'LONE-\ud800' }] } });
+      assert.deepEqual((leaky.json.secrets as { leaked: string[] }).leaked, ['log', 'pack', 'db', 'spool', 'bytes']);
     } finally {
       opened.db.close();
     }
   });
+});
+
+test('secretsInFiles finds a secret that straddles a chunk boundary, as a whole-file search would', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'oboete-scan-'));
+  try {
+    const ascii = join(dir, 'ascii');
+    const utf8 = join(dir, 'utf8');
+    // With 8-byte chunks, "KEY-12345" spans bytes 5-13 and "秘密鍵" (9 bytes) spans 6-14.
+    writeFileSync(ascii, 'xxxxxKEY-12345yyyyyyy');
+    writeFileSync(utf8, Buffer.concat([Buffer.from('zzzzzz'), Buffer.from('秘密鍵'), Buffer.from('zz')]));
+    const secrets = [
+      { id: 'ascii', secret: 'KEY-12345' },
+      { id: 'utf8', secret: '秘密鍵' },
+      { id: 'inside', secret: 'xxx' },
+      { id: 'absent', secret: 'NOT-THERE' },
+      { id: 'empty', secret: '' },
+    ];
+    for (const chunkBytes of [1, 8, 1 << 20]) {
+      assert.deepEqual([...secretsInFiles([ascii, utf8], secrets, chunkBytes)].sort(), ['ascii', 'inside', 'utf8'], `chunk ${chunkBytes}`);
+    }
+    const head = join(dir, 'head');
+    const rest = join(dir, 'rest');
+    writeFileSync(head, 'aaaKEY-');
+    writeFileSync(rest, '12345bbb');
+    assert.deepEqual([...secretsInFiles([head, rest], secrets, 4)], [], 'a secret split across two files is not one secret');
+    assert.throws(() => secretsInFiles([dir], secrets), 'an unreadable surface fails the check rather than counting as clean');
+    assert.throws(() => secretsInFiles([join(dir, 'missing')], secrets));
+    const atEnd = join(dir, 'at-end');
+    const whole = join(dir, 'whole');
+    const empty = join(dir, 'empty');
+    writeFileSync(atEnd, 'yyyyyyyyyyyKEY-12345');
+    writeFileSync(whole, '秘密鍵');
+    writeFileSync(empty, '');
+    for (const chunkBytes of [1, 3, 8, 9, 1 << 20]) {
+      assert.deepEqual([...secretsInFiles([atEnd, whole, empty], secrets, chunkBytes)].sort(), ['ascii', 'utf8'], `chunk ${chunkBytes}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

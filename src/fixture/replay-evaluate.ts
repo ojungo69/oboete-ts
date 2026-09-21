@@ -1,5 +1,5 @@
 // Completed-run measurement and verdicts, separate from replay execution and report serialization.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CAPTURE_DEADLINE_MS } from '../capture.js';
@@ -159,9 +159,41 @@ function walkFiles(root: string): string[] {
   }
 }
 
-function bufferHas(haystack: Buffer, needle: string): boolean {
-  if (needle === '') return false;
-  return haystack.includes(Buffer.from(needle, 'utf8'));
+const SCAN_CHUNK_BYTES = 1 << 20;
+
+/**
+ * The ids of the secrets that occur anywhere in these files. Each file is read a chunk at a time and
+ * the last `longest secret - 1` bytes are carried into the next chunk, which finds exactly what
+ * `Buffer.includes` over the whole file finds without holding the file: the database alone was
+ * 51 MB at 10,000 events, and reading it whole put the replay over SC-008's bound (#267).
+ */
+export function secretsInFiles(
+  files: string[],
+  secrets: { id: string; secret: string }[],
+  chunkBytes = SCAN_CHUNK_BYTES,
+): Set<string> {
+  const needles = secrets.filter((row) => row.secret !== '').map((row) => ({ id: row.id, bytes: Buffer.from(row.secret, 'utf8') }));
+  const carry = Math.max(0, ...needles.map((needle) => needle.bytes.length - 1));
+  // One buffer for the whole scan: a new Buffer per chunk piles up until the collector runs, which
+  // on the 51 MB database cost as much as reading it whole.
+  const buffer = Buffer.allocUnsafe(carry + chunkBytes);
+  const found = new Set<string>();
+  for (const file of files) {
+    const fd = openSync(file, 'r');
+    try {
+      let kept = 0;
+      for (let read = readSync(fd, buffer, kept, chunkBytes, null); read > 0; read = readSync(fd, buffer, kept, chunkBytes, null)) {
+        const end = kept + read;
+        const window = buffer.subarray(0, end);
+        for (const needle of needles) if (window.includes(needle.bytes)) found.add(needle.id);
+        kept = Math.min(carry, end);
+        buffer.copyWithin(0, end - kept, end);
+      }
+    } finally {
+      closeSync(fd);
+    }
+  }
+  return found;
 }
 
 function countQuery(db: ReturnType<typeof openDatabase>['db'], sql: string, repoId: string): number {
@@ -197,24 +229,20 @@ function maxMs(samples: Sample[]): number {
   return samples.length === 0 ? 0 : Math.max(...samples.map((sample) => sample.ms));
 }
 
-/** Every byte this run wrote anywhere, so a leaked secret is found wherever it landed. */
-function writtenSurfaces(paths: ReturnType<typeof oboetePaths>, packBlob: string): Buffer[] {
-  const dbBuffers = [paths.db, `${paths.db}-wal`, `${paths.db}-shm`]
-    .filter((path) => existsSync(path))
-    .map((path) => readFileSync(path));
-  const extraFiles = [...walkFiles(paths.spool), ...walkFiles(paths.logs)].map((path) => readFileSync(path));
-  return [...dbBuffers, ...extraFiles, Buffer.from(packBlob, 'utf8')];
-}
-
 /** SC-005 and FR-021: no planted secret reaches a written surface, no directive reaches a memory. */
 function privacyChecks(
   db: ReturnType<typeof openDatabase>['db'],
   paths: ReturnType<typeof oboetePaths>,
   input: { maps: MeasureInput['maps']; packBlob: string },
 ): { leakedSecrets: string[]; leakedDirectives: string[]; negativesUnredacted: number; rawDirectiveRows: number } {
-  const surfaces = writtenSurfaces(paths, input.packBlob);
+  // Every file this run wrote, and the packs it delivered, so a leaked secret is found wherever it landed.
+  const written = [paths.db, `${paths.db}-wal`, `${paths.db}-shm`]
+    .filter((path) => existsSync(path))
+    .concat(walkFiles(paths.spool), walkFiles(paths.logs));
+  const inFiles = secretsInFiles(written, input.maps.secretValues);
+  const packBytes = Buffer.from(input.packBlob, 'utf8');
   const leakedSecrets = input.maps.secretValues
-    .filter((row) => surfaces.some((buffer) => bufferHas(buffer, row.secret)))
+    .filter((row) => row.secret !== '' && (inFiles.has(row.id) || packBytes.includes(Buffer.from(row.secret, 'utf8'))))
     .map((row) => row.id);
 
   const memoryRows = db.prepare('SELECT title AS title, body AS body FROM memories').all() as {
