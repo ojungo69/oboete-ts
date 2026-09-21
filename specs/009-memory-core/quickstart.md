@@ -2912,3 +2912,37 @@ at `32edb651`, sixteen commits over `9397a85a`.
 
 This section claims accuracy of the text against the source at `32edb651`, nothing about whether
 the product is qualified. What the README now says about that is in its own limitations section.
+
+## E17 — fresh-context verification of the completed markers (T045)
+
+Every `[X]` in `tasks.md` was re-checked against the source and the receipts it names, by seven
+readers that had not done the work, and a reviewer that re-read every verdict which was not clean
+and spot-checked three that were. Of 43 markers, 36 were earned as written, five claimed more than
+their receipts carry, and two were not earned.
+
+**The one defect that mattered.** T002 and T046 both promise to synchronize the local Spec Kit
+constitution, and that file had never been updated: `.specify/memory/constitution.md` was still
+3.2.0 of 2026-09-04, with `### II. One File, No Daemon` and "There MUST be no resident daemon, RPC
+server" — the clause the 5.0.0 amendment reversed to permit the leased resident worker this feature
+ships. `CONSTITUTION.md` asserted the copy was synchronized in both of its sync-impact reports. The
+file is outside git (`.git/info/exclude`), so nothing would have caught it. Ten `speckit-*` skills
+read that path, so the next Constitution Check would have held T047's resident worker against a
+rule forbidding it. It now carries `CONSTITUTION.md` verbatim at 5.0.0.
+
+**Five lines corrected rather than re-worked**, because in each case the work was done and the line
+described it wrongly:
+
+- T003 and T004 name a review whose findings were never written down. Both lines now say what the
+  marker actually rests on — the increment split and the end state — instead of implying a log.
+- T030 named `test/unit/transfer.test.ts` for scope and provenance; that file covers the old reader
+  and passes `--format 1` explicitly, while the format 2 assertions are in
+  `test/unit/migration-import.test.ts`. The line now names both.
+- T037 named `providers.test.ts` and `setup.test.ts` for limit exhaustion, which neither contains;
+  it is in `test/unit/provider-fallback.test.ts`, as this file's own contract note already said.
+- T047 claimed long-run resources. The 1,000-event leg is measured in E14; the 10,000- and
+  100,000-event legs and the seven-day soak are T042's and still open (#267, #268). The line now
+  says so.
+
+Two verifier verdicts were overturned on re-reading: T034 reads "using `src/transfer.ts`", and the
+record iterators it means were extracted to `src/transfer-records.ts` and are imported by
+`src/sync/capture.ts` and `src/sync/apply.ts`; T040's gap was an artifact its line never asked for.

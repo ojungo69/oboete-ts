@@ -13,10 +13,16 @@ and verification receipt. Full product completion is distinct from the first saf
 - [X] T001 Record the confirmed direction and 16-item requirements review in `specs/009-memory-core/spec.md` and `checklists/requirements.md`.
 - [X] T002 Apply the approved 4.0.0 amendment in `CONSTITUTION.md` and synchronize the local Spec Kit copy.
 - [X] T003 Prepare isolated `009-memory-core`, install the pinned `package-lock.json`, and inspect impact in `src/observer/` and `src/worker/`.
+  Status: the worktree and branch are in `HANDOFF-claude-code.md` and `plan.md`; the impact pass
+  left no separate record, so what supports this marker is the increment split in `plan.md` that it
+  produced, not a findings log (T045).
 
 ## Phase 2: Foundation
 
 - [X] T004 Review `specs/009-memory-core/plan.md`, `data-model.md` and contracts for migration, privacy, retry and completion consistency; resolve material findings before source edits.
+  Status: no findings log survives. The marker rests on the end state — the Constitution Check table
+  in `plan.md` and the agreement between `data-model.md` and `contracts/memory-core.md` on
+  checksums, privacy and retry (T045).
 - [X] T005 Define the concrete increment-A processing/retry columns and compatibility rules in `specs/009-memory-core/data-model.md` and `contracts/memory-core.md`.
 
 ## Phase 3: US1 — Recover accepted information (P1)
@@ -87,7 +93,7 @@ Independent test: preview and import a supported frozen corpus twice without cha
 source store, duplicating effects, reviving tombstones or activating historical tasks.
 
 - [X] T029 [US5] Pin supported claude-mem/CMEM export schemas and migration mappings in `specs/009-memory-core/contracts/migration.md` using primary sources and synthetic fixtures.
-- [X] T030 [US5] Extend versioned Oboete transfer with scope/provenance and the old reader in `src/transfer.ts` and `test/unit/transfer.test.ts`.
+- [X] T030 [US5] Extend versioned Oboete transfer with scope/provenance and the old reader in `src/transfer.ts`, with the old reader covered in `test/unit/transfer.test.ts` and the format 2 scope and provenance assertions in `test/unit/migration-import.test.ts`.
 - [X] T031 [US5] Add a read-only migration adapter with dry-run/explicit mapping and classification quarantine in migration operations and `src/worker/imported.ts`.
 - [X] T032 [US5] Verify source immutability, identity collisions, tombstones, repetition and historical work in `test/unit/migration-import.test.ts` and packed CLI checks.
 
@@ -106,7 +112,7 @@ incompatible progress conflicts without clock-only overwrites.
 Independent test: selected free/local/paid/agent modes obey consent and configured limits;
 free/local failure causes zero attempts at an unselected paid destination.
 
-- [X] T037 [US7] Test mode choice, limit exhaustion and consent changes in `test/unit/providers.test.ts` and `test/unit/setup.test.ts`.
+- [X] T037 [US7] Test mode choice in `test/unit/providers.test.ts`, consent changes in `test/unit/setup.test.ts`, and limit exhaustion in `test/unit/provider-fallback.test.ts`.
 - [X] T038 [US7] Complete explicit cost-policy setup and reservation handling in `src/config.ts`, `src/setup/`, `src/observer/reservation.ts` and `src/doctor/provider.ts`.
 - [X] T039 [US7] Verify no-model capture-only behavior and real chosen profiles through `src/doctor.ts`, packed CLI and `specs/009-memory-core/quickstart.md` evidence.
 
@@ -127,7 +133,8 @@ runs from the attempt rather than from batch creation. The cost policy is `obser
 Owner amendment, 2026-09-10:
 
 - [X] T046 Record the approved resident-worker option and configured model/provider failover in `CONSTITUTION.md`, the local Spec Kit constitution, `specs/009-memory-core/spec.md` and `plan.md`.
-- [X] T047 [US1] Implement and verify resident waiting for new/due work, one owner through idle/active epochs, pause/stop/config changes and upgrade/crash recovery in `src/worker/`, capture startup and operator controls; retain bounded one-shot observe and prove idle/long-run resources.
+- [X] T047 [US1] Implement and verify resident waiting for new/due work, one owner through idle/active epochs, pause/stop/config changes and upgrade/crash recovery in `src/worker/`, capture startup and operator controls; retain bounded one-shot observe and prove idle resources. The long-run legs belong to
+  T042 and are outstanding there (#267, #268).
 - [X] T048 [US7] Implement a bounded, consented model/provider fallback chain after free-tier/API failures in provider selection, reservations, setup/config and worker processing; verify free-only admission, shared quota versus target failure, per-attempt source eligibility and all-targets-failed retention.
 
 ## Phase 10: Completed-product verification
@@ -156,7 +163,10 @@ Owner amendment, 2026-09-10:
   and rewrites the help of `cli`, `sync-cli`, `observe` and `fixture/replay`. Every review round
   found claims the source did not support, and every one of them was checked against the constant,
   bound or branch that decides it before the text changed. See E16 in `quickstart.md`.
-- [ ] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
+- [X] T045 Run fresh-context verify-tasks for `specs/009-memory-core/tasks.md`, validating every completed marker against source and receipts.
+  Status: 43 markers checked, 36 earned as written. One real defect (the local Spec Kit
+  constitution was never synchronized, against what T002 and T046 claim) and five task lines that
+  described their own evidence wrongly. All six are fixed. See E17 in `quickstart.md`.
 
 ## Dependencies and implementation strategy
 
