@@ -214,8 +214,9 @@ oboete doctor --no-probe-agents
 oboete doctor --json
 ```
 
-`--probe-provider` makes a live summarizer call, and the call is retried once, so a probe can cost
-two attempts against the daily cap when the preset is capped. It can also send nothing at all —
+`--probe-provider` makes a live summarizer call. Most outcomes settle in one attempt; a retryable
+HTTP failure or an unusable, empty or truncated answer is retried once, so a probe can cost two
+attempts against the daily cap when the preset is capped. It can also send nothing at all —
 a missing configuration, a consent mismatch or an exhausted allowance is reported before any
 request. Without the flag, the `provider` item reports what it can decide from configuration alone
 and otherwise quotes the last worker outcome. `--no-probe-agents` skips the headless wiring probe;
@@ -280,23 +281,27 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   provenance, context, work, visibility and proposal records as well as the memories; `--format 1`
   writes the older memory-only file for a destination that cannot read v2. Secret rows and
   tombstones travel as hashes with empty title and body in both.
-- `oboete import [file|-] [--dry-run|--apply] [--json]` — per-line validated merge. **A format 2
-  file and a `--from claude-mem` file are previewed unless you pass `--apply`**; only the older
+- `oboete import [file|-] [--dry-run|--apply] [--json]` — a merge validated line by line for the
+  native formats; a `--from claude-mem` file is one JSON object, read whole and adapted. **A
+  format 2 file and a claude-mem file are previewed unless you pass `--apply`**; only the older
   format 1 applies by default. Since export now writes format 2, a restore is
   `oboete import backup.jsonl --apply`.
   Newly inserted readable memories land quarantined, at `local_only` or stricter and
   `review_state = imported`, and stay out of search and injection until the worker classifies them;
   a row that matches a memory you already have keeps your review state, and an incoming label never
   weakens your sensitivity.
-  `--map-repo <old-id>=<current-id>` maps a machine-local (`common_dir`) repository identity from
-  another installation onto one here, and `--map-work`, `--map-context`, `--map-project` and
-  `--map-project-hash` do the same for the other entities; each mapping list holds at most 1,000
-  entries. Limits differ by format: 64 KiB per line for v1, 4 MiB per line for v2, 256 MiB per
+  The mappings differ by source. A native file takes `--map-repo <old-id>=<current-id>`, which
+  maps a machine-local (`common_dir`) repository identity from another installation onto one here,
+  and `--map-work <old-work-id>=<local-work-id>`. A claude-mem file takes `--map-project
+  <exact-name>=<repo>` or `--map-project-hash <sha256>=<repo>` instead, and mixing the two sets is
+  refused. `--map-context <local-repo-id>=<local-context-id>` names a privacy context in this
+  installation, not one from the file. Each mapping list holds at most 1,000 entries. Limits differ by format: 64 KiB per line for v1, 4 MiB per line for v2, 256 MiB per
   native file, and 5 MiB with at most 20,000 records for a claude-mem file. A secret row that
   carries text or concepts is refused, and so is a source attached to it that carries evidence, a
-  citation value, a capture root, source paths or a producing agent; a redacted source record,
-  which keeps its provenance metadata with those content-bearing fields cleared, travels in either
-  format. Exit 2 on an invalid file.
+  citation value, a capture root, source paths or a producing agent. Format 2 still carries that
+  memory's source records with the content-bearing fields cleared and the rest of the provenance
+  intact; format 1 has nowhere to put them and writes no sources at all, so a v1 backup of a
+  secret or deleted memory restores less. Exit 2 on an invalid file.
 - `oboete import promote <migration-record-id> --work <local-work-id>` / `oboete import promote
   --list` — promotes one imported **sharing proposal** that local classification has cleared,
   creating a pending proposal for you to approve; it is not a way to release arbitrary quarantined
@@ -304,8 +309,9 @@ partially degraded, 2 invalid input, 3 storage or input/output failure. Agent-in
   it can be promoted, and says how many it left out.
 - `oboete mcp` — stdio JSON-RPC server under the current working directory, exposing `search`,
   `timeline` and `get`, plus `work_status`, `work_choose`, `sharing_status` and `sync_status`. Of
-  those, only `work_choose` changes anything: approving a sharing proposal, and pushing, pulling or
-  resolving sync, stay with the human-operated CLI and the viewer. A repository identifier in the
+  those, only `work_choose` changes anything. Approving a sharing proposal is done in the CLI or
+  the viewer; pushing, pulling and resolving sync are CLI-only, because the viewer has no route
+  for them. A repository identifier in the
   tool arguments is refused (JSON-RPC `-32602`); extra command arguments exit 2; otherwise exit 0
   when stdin closes. Pi keeps its own narrower surface of three tools.
 
@@ -330,9 +336,12 @@ contracts carry the fact that a compaction happened and no summary, so the recor
 without its text. Claude and Pi supply both.
 
 A hook reads at most 256 KiB of the event on standard input, every time — replaying the same
-oversized event truncates it again. What is read becomes a partial capture: redacted and stored,
-but never promoted into a memory and never injected. Repository rules in `.oboete.toml` are
-bounded too: at most 64 entries of at most 256 characters each.
+oversized event truncates it again. What is read becomes a partial capture: redacted, stored, and
+kept out of the summarizer, so the truncated text itself is never promoted into a memory. Its
+metadata is not withheld in the same way — the paths a readable prefix named can still reach a
+rule-based change record or a session summary — so treat the guarantee as one about the text.
+Repository rules in `.oboete.toml` are bounded too: at most 64 entries of at most 256 characters
+each.
 
 **What never is.** Secret values (redacted to `[REDACTED:<rule>]` before the first write, including
 the spool). Text wrapped in `<private>` tags, including an unclosed tag through the end of the
@@ -373,8 +382,9 @@ absolute rules in `config.toml`.
 
 **Repository boundary.** Identity is the normalized git remote (userinfo, query, and fragment
 removed) or the realpath of `git rev-parse --git-common-dir`. Injection, search, timeline, get,
-the Model Context Protocol tools, and the viewer all use that same-repository scope. No setting
-widens it, and cross-repository search is milestone M2 or later.
+the Model Context Protocol tools, and the viewer all use that same-repository scope, with one
+exception: an approved personal projection is readable wherever you are, because you approved that
+exact text. Nothing else widens the scope, and cross-repository search is milestone M2 or later.
 
 **Audience inside a repository.** Being in the same repository is necessary, not sufficient. A
 memory is readable when it belongs to the project, or to the work item you have selected, or is a
@@ -415,9 +425,10 @@ indefinitely therefore keeps raw captured content indefinitely.
 
 Before falling back, the worker tries the providers you configured as fallbacks, in order — at
 most three entries, filtered by the cost policy, and included in the consent record, so adding one
-is a change you accept in `oboete setup`. Two outcomes end the chain immediately instead of moving
-to the next target: a consent record that no longer matches the settings (`consent_changed`), and
-an answer the worker could not use (`unusable_output`). Otherwise the rules are used once every
+is a change you accept in `oboete setup`. Three outcomes end the chain instead of moving to the
+next target: a consent record that no longer matches the settings (`consent_changed`), an answer
+the worker could not use (`unusable_output`), and an answer in the wrong language twice over
+(`language_mismatch`), which goes straight to the rules. Otherwise the rules are used once every
 admitted target has failed.
 
 | Reason | Sentence in a pack | What doctor says |

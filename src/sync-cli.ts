@@ -19,7 +19,7 @@ const USAGE = 'Usage: oboete sync init <dir> [--classes eligible,local_only,priv
   '       oboete sync map-repo <repo-key> <local-repo-id> [--json]\n' +
   '       oboete sync leave [--json]\n' +
   'The directory must already exist and may not contain, or sit inside, the oboete home.\n' +
-  '`key show` and `join` read and print the key on a terminal only.\n' +
+  '`key show` prints the key; `join` reads it without echoing. Both need a terminal.\n' +
   'One pull reads at most 32 other replicas\' bundles; init syncs eligible, local_only and private\n' +
   'memories unless --classes narrows that.\n';
 
