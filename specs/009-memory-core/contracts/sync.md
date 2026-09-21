@@ -593,6 +593,10 @@ the text above says less, this paragraph is the rule:
   reader does: a memory or candidate whose text does not hash to its material hash
   (`material_hash_mismatch`, `candidate_hash_mismatch`), text on a deleted or secret memory
   (`redacted_memory_text`), and a natural key the payload does not derive (`natural_mismatch`).
+  Deletion is carried by the control, never by the payload alone: a payload with `deleted_at` set
+  under a control that does not mark the revision a tombstone is rejected
+  (`deleted_without_tombstone`), because apply reads deletion from the control, so such a line
+  would otherwise skip the hash comparison and blank a row that stays alive;
   Text and candidate are identity, never edited in place, so a revision that swaps a proposal's
   candidate is malformed and its bundle is rejected before anything is stored;
 - repository ownership is verified on apply with local rows, as migration verifies it: a memory,

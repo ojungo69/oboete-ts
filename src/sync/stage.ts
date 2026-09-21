@@ -231,7 +231,12 @@ function checkPayloadIntegrity(line: RevisionLine): void {
   const payload = line.payload!;
   const reject = (code: string): never => { throw new BundleRejected(code, line.revision_id); };
   if (line.kind === 'memory') {
-    const absentText = payload.deleted_at !== null || payload.sensitivity === 'secret' || line.control.tombstone || line.control.sensitivity_floor === 'secret';
+    // `controlOf` derives the tombstone from `deleted_at`, so a line that claims one without the
+    // other was written by hand. It cannot be allowed to stand in for a tombstone here: apply reads
+    // deletion from the control, so such a line would skip the hash comparison below and then blank
+    // a row that stays alive, with no deletion to show for it.
+    if (payload.deleted_at !== null && !line.control.tombstone) reject('deleted_without_tombstone');
+    const absentText = payload.sensitivity === 'secret' || line.control.tombstone || line.control.sensitivity_floor === 'secret';
     if (absentText) {
       if (payload.title !== '' || payload.body !== '' || (payload.concepts ?? '[]') !== '[]') reject('redacted_memory_text');
     } else if (materialHash(String(payload.title ?? ''), String(payload.body ?? '')) !== payload.material_hash) reject('material_hash_mismatch');

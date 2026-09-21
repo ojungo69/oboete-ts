@@ -17,7 +17,7 @@ import { applyStaged, resolveRow, type ApplyResult } from '../../src/sync/apply.
 import { captureLocalChanges } from '../../src/sync/capture.js';
 import { BundleError, decryptBundle, encryptBundle, MAX_CIPHERTEXT_BYTES, MAX_PLAINTEXT_BYTES } from '../../src/sync/envelope.js';
 import { BOUNDS } from '../../src/sync/format.js';
-import { canonicalJson, payloadHash, revisionId, snapshotId, SNAPSHOT_FORMAT, type SyncKind } from '../../src/sync/identity.js';
+import { canonicalJson, type Control, payloadHash, revisionId, snapshotId, SNAPSHOT_FORMAT, type SyncKind } from '../../src/sync/identity.js';
 import {
   initSpace, joinSpace, pullSpace, pushSpace, readKey, spaceDirectory, SyncError, syncPaths, withSpaceLock,
 } from '../../src/sync/space.js';
@@ -42,12 +42,12 @@ type Line = Record<string, unknown>;
 /** One revision line whose `revision_id` is the one the reader recomputes from its identity fields. */
 function line(input: {
   origin_id: string; kind?: SyncKind; author?: string; parents?: string[]; natural: Row;
-  payload?: Row | null; payload_hash?: string | null; head?: boolean;
+  payload?: Row | null; payload_hash?: string | null; head?: boolean; control?: Control;
 }): Line {
   const payload = input.payload ?? null;
   const identity = {
     origin_id: input.origin_id, kind: input.kind ?? 'memory', author: input.author ?? SENDER,
-    parents: input.parents ?? [], control: CONTROL, natural: input.natural,
+    parents: input.parents ?? [], control: input.control ?? CONTROL, natural: input.natural,
     payload_hash: input.payload_hash !== undefined ? input.payload_hash : (payload === null ? null : payloadHash(payload)),
   };
   return { ...identity, revision_id: revisionId(identity), head: input.head ?? true, payload };
@@ -310,19 +310,27 @@ test('a payload whose text, hashes or natural key disagree is rejected before ap
     const before = counts(db);
     const foreign = `${OTHER}:m_foreign`;
     const base: Row = { ...victimHead.payload!, id: foreign };
-    const cases: { name: string; code: string; payload: Row; natural?: Row }[] = [
+    const cases: { name: string; code: string; payload: Row; natural?: Row; control?: Control }[] = [
       { name: 'other text under the victim material hash', code: 'material_hash_mismatch', payload: { ...base, title: 'Unrelated', body: 'Unrelated body' } },
       { name: 'own material hash under the victim natural key', code: 'natural_mismatch',
         payload: { ...base, title: 'Unrelated', body: 'Unrelated body', material_hash: materialHash('Unrelated', 'Unrelated body') } },
       { name: 'a checkpoint claiming an ordinary natural key', code: 'natural_mismatch', payload: { ...base, work_id: `${OTHER}:w_x` } },
-      { name: 'text on a deleted memory', code: 'redacted_memory_text', payload: { ...base, deleted_at: 5 } },
+      { name: 'text on a deleted memory', code: 'redacted_memory_text', payload: { ...base, deleted_at: 5 },
+        control: { tombstone: true, sensitivity_floor: 'eligible' } },
+      // `deleted_at` in the payload without the tombstone in the control is a pair an honest sender
+      // cannot produce, since `controlOf` derives one from the other. Left unchecked it is the way to
+      // blank a live row: no hash is compared, and apply takes deletion from the control, so the
+      // memory survives with nothing in it and nothing reports a change.
+      { name: 'a payload deleted where the control is not', code: 'deleted_without_tombstone', payload: { ...base, deleted_at: 5 } },
+      { name: 'blank text under a payload deleted where the control is not', code: 'deleted_without_tombstone',
+        payload: { ...base, deleted_at: 5, title: '', body: '', concepts: '[]' } },
       { name: 'text on a secret memory', code: 'redacted_memory_text', payload: { ...base, sensitivity: 'secret' } },
     ];
     for (const item of cases) {
       const path = join(dir, `${OTHER}.integrity.plain`);
       writeBundle(path, OTHER, (emit) => {
         emit({ kind: 'repo', origin_id: String(base.repo_id), identity_kind: 'remote', normalized_identity: REMOTE });
-        emit(line({ origin_id: foreign, author: OTHER, parents: [victimHead.revision_id], natural: item.natural ?? victimOrigin.natural, payload: item.payload }));
+        emit(line({ origin_id: foreign, author: OTHER, parents: [victimHead.revision_id], natural: item.natural ?? victimOrigin.natural, payload: item.payload, control: item.control }));
       });
       assert.throws(() => applyBundle(db, OTHER, path), rejected(item.code), item.name);
       assert.deepEqual(counts(db), before, item.name);
