@@ -192,7 +192,8 @@ export function aliasObserverInput(input: ObserverInput): { sent: ObserverInput;
     if (!record(value) || !(key in value)) return value;
     const back = (id: unknown) => (typeof id === 'string' ? map.get(id) ?? id : id);
     const ids = value[key];
-    return { ...value, [key]: many ? (Array.isArray(ids) ? ids.map(back) : ids) : back(ids) };
+    if (!many) return { ...value, [key]: back(ids) };
+    return { ...value, [key]: Array.isArray(ids) ? ids.map(back) : ids };
   };
   const restore: Restore = (parsed) => {
     if (!record(parsed)) return parsed;
