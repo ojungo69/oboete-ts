@@ -598,7 +598,8 @@ Implemented and verified here is not the same as qualified. At this version:
   target. Retrieval has been repaired since the two failures; nothing re-measures it here.
 - **Scale and long-run behaviour are open.** The resource sweep replays about a thousand events in
   roughly four minutes and then holds a reader open for 24.9 seconds against the resident worker;
-  ten thousand and a hundred thousand events are #267, and seven days of real use is #268. Nothing
+  ten thousand events pass the same gated checks on Node 24 and 22, a hundred thousand are not
+  measured (#267), and seven days of real use is #268. Nothing
   here measures what a week of memories costs to hold or to search.
 - **Device sync moves files, not a service.** It has no network transport, no signatures on
   bundles, and one pull reads at most 32 other replicas' bundles.

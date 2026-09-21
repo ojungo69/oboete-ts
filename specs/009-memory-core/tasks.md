@@ -162,7 +162,10 @@ Owner amendment, 2026-09-10:
   on both supported Node versions (`scripts/measure-resources.mjs`, receipts in
   `docs/evidence/memory-core-2026-09/resource-sweep.md`): observed peak `VmHWM` 107.43 / 100.75 MiB across every process of the run against a
   150 MiB bound, the WAL growing under a held reader and recycling to 0 after the product's own stop path,
-  no spool file at any sample, and every hook exiting 0. The 10,000- and 100,000-event legs are #267, the
+  no spool file at any sample, and every hook exiting 0. The 10,000-event leg passes every gated check on both
+  versions after #332 (peak 131.07 MiB on 22.x, 128.06 MiB on 24.x). Two further 24.x runs stopped with a harness error: a worker
+  SQLite error of unidentified cause during phase B spooled captures, and the harness waited on sources awaiting a
+  work choice (#336). The 100,000-event leg is #267, the
   seven-day soak is #268, and local-model consumption needs a model this task is not authorised to activate,
   so the sweep runs with `[observer] preset = "none"` and reports SC-009 recall 0/40 rather than gating it.
 - [X] T043 Run cohesive typecheck/lint/build/tests/pack and correctness/security, code-review and ponytail-review; record results in `specs/009-memory-core/quickstart.md`.
@@ -457,8 +460,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   #233 and #234 are recorded against the contract paragraphs that place them outside this task —
   a pre-existing pass-loop defect the resident inherits, two clock-and-retention findings from the
   delta reviews, and the post-release spawn hand-off the unconditional release leaves open.
-- T042 (open, 2026-09-21): the retained-history resource sweep is measured and recorded; the scale legs
-  and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
+- T042 (open, 2026-09-22): the retained-history resource sweep is measured and recorded at 1,000 and
+  10,000 events; the 100,000-event leg and the soak are not. `scripts/measure-resources.mjs` drives the product's own binaries against a
   temporary home and reads only what the product writes or what the run itself started, in two phases: a replay of
   `test/fixtures/events-1000.jsonl` through the real hooks and 38 one-shot worker runs, then, against
   the resident worker, a hold of a read-only connection of at least 20 seconds (24.9 s measured) while 20 sessions keep capturing. Four gated checks pass on Node
@@ -472,6 +475,8 @@ writers require separate worktrees. No deployment follows merely from an increme
   session-start packs without `summary_pending` are reported, not gated, and belong to the timing work rather than this sweep.
   What the run cannot say is stated in the evidence file: a half-minute hold shows no long-run growth
   (#268), 1,051 events is not scale (#267), and `preset = "none"` exercises no provider at all.
+  The 10,000-event leg (same file, "10,000 events") passes the same four checks on both versions
+  after #332.
 - T040 (open, 2026-09-17): the macOS leg now runs on a GitHub-hosted `macos-15` runner through
   `.github/workflows/platform.yml` instead of the M1 iMac. Four runs are recorded in E10 of
   `quickstart.md`: they found a fail-open `secret_paths` defect through symbolic links (fixed in

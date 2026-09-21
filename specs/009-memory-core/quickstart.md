@@ -2765,7 +2765,9 @@ half-minute hold shows nothing about long-run growth (#268), and `[observer] pre
 provider runs at all, so SC-009 recall is 0/40 by construction and is reported, not gated. Local
 model consumption needs a model this task is not authorised to activate. T042 therefore stays open
 with its three named legs outstanding, which is why its line in `tasks.md` carries the status rather
-than an `[X]`.
+than an `[X]`. The 10,000-event leg was measured afterwards and passes every gated check on both
+versions (`docs/evidence/memory-core-2026-09/resource-sweep.md`, "10,000 events"); the
+100,000-event leg and the soak remain.
 
 ## E15 — cohesive verification of the assembled feature (T043)
 

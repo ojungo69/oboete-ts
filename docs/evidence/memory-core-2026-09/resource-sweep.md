@@ -99,10 +99,57 @@ Reported, not gated:
   spawns those hooks itself. The phase A capture numbers do not: the replay is wrapped, but it times
   its hooks from inside.
 
+## 10,000 events (#267)
+
+The same harness, fed a 10,048-line fixture with `--fixture`. The fixture is generated with
+`node scripts/fixtures/generate-1000-events.mjs --events 10000 --out <file>`, sha256 `758e26a0…`. The
+phase A timeout scales with the line count.
+
+| | Node 24.16.0 (`c075b647`) | Node 22.23.1 (`64e16e5a`) | Bound |
+|---|---|---|---|
+| peak `VmHWM`/`%M`, any process of the run | 131,132 KiB (128.06 MiB) | 134,220 KiB (131.07 MiB) | < 150 MiB |
+| worker peak `VmHWM` (phase A) | 114,644 KiB (111.96 MiB) | 108,884 KiB (106.33 MiB) | same bound |
+| growth per 1,000 events | 4,870,125 bytes | 4,871,348 bytes | recorded, not gated |
+| capture hooks (phase A) | p99 182.1 ms, 100.0% ≤ 300 ms (n=6,870) | p99 156.8 ms, 100.0% ≤ 300 ms (n=6,870) | p99 ≤ 300 ms |
+| phase B hooks | n=240, p50 242 ms, max 460 ms, 0 non-zero | n=240, p50 220 ms, max 3,453 ms, 0 non-zero | every hook exits 0 |
+| WAL during the hold | 0 → peak 33,145,432 bytes → 0 | 0 → peak 36,544,432 bytes → 0 | recycles after the stop |
+| rows phase A left, kept after phase B | 12,761 / 12,761 | 12,761 / 12,761 | all |
+| load average at start | 0.78 1.00 1.24 | 0.25 0.79 1.39 | — |
+
+All four gated checks pass on both legs. Injection p99 (417.9 / 386.2 ms) is reported, not gated,
+as in the 1,000-event run.
+
+**What it took to get here.**
+
+- The first pair of runs at `db346d3d` failed `rss-bound`: 178,952 KiB on 24.x and 180,688 KiB on
+  22.x. Every product process was within the bound. Polling the replay driver's own `VmHWM` showed
+  it flat at 125,204 KiB through the whole line loop, then stepping up in the last seconds. That was
+  the evaluation reading `memory.db` (51 MB) and the other written files whole to search them for
+  the planted secrets.
+- #332 scans them a chunk at a time through one reused buffer. On the kept database: reading it
+  whole cost +49.0 MiB, one `Buffer.concat` per chunk +50.5 MiB, and the reused buffer +1.3 MiB.
+  That fix is what both rows above measure.
+- The 24.x leg ran three times after #332. Two of them (v2 and v3, on `64e16e5a`) ended with the
+  harness's own error, exit 2. In both, the resident worker logged `ERR_SQLITE_ERROR` during phase
+  B's held-reader window, 3 s and 9 s into the hold. In the 2 s it then took to exit
+  `storage_error`, captures from the phase B sessions went to the spool.
+- The cause of that SQLite error is not identified: the logs carry only node:sqlite's generic code,
+  not the result code. It did not occur in the third 24.x run or in either 22.x run.
+- What made the run stop is separate and is #336. Spool recovery bound the spooled opening prompts
+  of a phase B session to a `late_source` span with no work, as `contracts/work.md` requires. The
+  harness then waited for a `pending = 0` that no run reaches without a work choice.
+- The fix for #336 is not merged yet. It is to count such sources apart from `pending`, so the
+  harness reports them instead of waiting on them, and to log the SQLite result code next to
+  `ERR_SQLITE_ERROR`.
+- The third run is the row above. `c075b647` is a local commit: `64e16e5a` plus that logging change
+  to `errorCode()`, made to name the error. No error occurred in it.
+
 ## What this run cannot say
 
 - **Long-run growth.** A half-minute hold cannot show it. The seven-day run is #268.
-- **Scale.** 1,051 events is the fixture, not the 10,000- and 100,000-event runs of #267.
+- **Scale beyond 10,000.** The 100,000-event run is not measured (#267). The replay driver holds
+  the whole fixture in memory. At 10,000 events its own peak during the line loop was 125,204 KiB,
+  so a tenfold fixture is expected to exceed the bound. That is a projection, not a measurement.
 - **A real summarizer.** With `preset = "none"` nothing is generated, so neither the provider's cost
   nor recall is exercised here.
 
@@ -127,7 +174,11 @@ keeps its temporary home and prints the path.
 
 ## Receipts
 
-`/var/tmp/oboete-t042/v30-24.16.0.{md,json,observe.log}` and `v30-22.23.1.{md,json,observe.log}`. The
+`/var/tmp/oboete-t042/v30-24.16.0.{md,json,observe.log}` and `v30-22.23.1.{md,json,observe.log}` (1,000
+events). For 10,000 events: `10k-v4-24.16.0.*` and `10k-v2-22.23.1.*`. The runs before the fix are
+`10k-24.16.0.*` and `10k-22.23.1.*`, with the driver poll in `10k-22.23.1.driver-vmhwm.txt`. The two
+24.x runs that stopped are `10k-v2-24.16.0.*` and `10k-v3-24.16.0.*`, with their kept homes in
+`10k-v2-24.16.0-home/` and `10k-v3-24.16.0-home/`. The
 Markdown is the harness's own report; the JSON is the same data unrounded; `observe.log` is the
 worker's log for the run, which is where `endReason`, `workerErrors` and the bad-end set are read
 from.
