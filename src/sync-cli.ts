@@ -17,7 +17,10 @@ const USAGE = 'Usage: oboete sync init <dir> [--classes eligible,local_only,priv
   '       oboete sync status [--json]\n' +
   '       oboete sync resolve <origin-id> --keep <revision-id|checkpoint-memory-origin> [--json]\n' +
   '       oboete sync map-repo <repo-key> <local-repo-id> [--json]\n' +
-  '       oboete sync leave [--json]\n';
+  '       oboete sync leave [--json]\n' +
+  'The directory must already exist and may not contain, or sit inside, the oboete home.\n' +
+  '`key show` and `join` read and print the key on a terminal only.\n' +
+  'A space holds at most 32 replicas; init syncs eligible memories unless --classes says otherwise.\n';
 
 type Io = { out(text: string): void; err(text: string): void; isTty(): boolean; readSecret(prompt: string): Promise<string> };
 
