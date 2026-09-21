@@ -62,10 +62,11 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
 - [ ] T023 [US3] Reproduce and correct demonstrated lexical/MMR/supersession misses in `src/retrieval/rank.ts`,
   `src/db/queries.ts` and `test/unit/retrieval.test.ts`. Status: none reproduce on the `events-1000` corpus
   (the no-model replay stops every fact before ranking; stored verbatim, all 40 fixture facts rank within the
-  first five), pinned in `test/unit/retrieval.test.ts`; the MMR depth observation is #272. The open miss is the
+  first five), pinned in `test/unit/retrieval.test.ts`. Two misses were found after that: the
   small-corpus threshold drop #275, reproduced from the `2026-09-17T15-05-08-894Z` dogfood run (JST
-  2026-09-18) and carried as a skipped
-  five-row artifact in the same file. Acceptance: #275 fixed by retiring the admission threshold
+  2026-09-18) as a five-row artifact in the same file, and the MMR depth drop #272, reproduced as a
+  fixture case in the same file. #275 is fixed and its artifact runs; #272 is the open leg, and its
+  artifact is the one still skipped. Acceptance: #275 fixed by retiring the admission threshold
   (`.specify/bugs/small-corpus-threshold-drop/assessment.md`, 2026-09-20 decision, measured against two
   replacement gates); that artifact un-skipped and passing; the fixture pins still green; plus the pins the
   artifact alone does not give: a small-corpus false-positive case (an unrelated memory in a five-row corpus
@@ -77,7 +78,7 @@ produce separately scored retention, retrieval, delivery and answer outcomes.
   `threshold` key retrieves exactly as one without it.
   2026-09-21: the #275 leg is closed and measured — the artifact runs unskipped, a five-row
   false-positive case and the `buildPromptPack` receipt hold, a mutation reintroducing
-  magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,662
+  magnitude-based exclusion in `rrfFuse` is killed by four tests, and the suite is green at 1,663
   passing (E18). The MMR leg is not: #272 reproduces a drop of a distinct fact once fifteen
   candidates rank above it, by probe rather than by a fixture corpus case, and `lambda` is
   unchanged. This task stays open for that leg, the way T042 stays open for its own.

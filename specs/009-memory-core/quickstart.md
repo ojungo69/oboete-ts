@@ -223,7 +223,8 @@ Receipts under `/var/tmp/oboete-009-20260909.jJ5grc/`:
 - `c3-all-node24.log` and `c3-all-node22.log`: 1,032 unit/migration/script checks plus 202 serial
   E2E/fault checks pass on each supported Node version. `c3-pack.log` installs the 20.559 MB package
   and runs its version command. After Ponytail's identical cancellation pairs were consolidated,
-  `c3-ponytail.tap` and `c3-ponytail-node22.tap` pass all 40 affected injection/deferred tests.
+  `c3-ponytail.tap` and `c3-ponytail-node22.tap` pass all 40 affected injection/deferred tests. Test names below are the receipts; line numbers are not quoted, because they move with
+every edit to that file.
   These checks do not replace the unresolved runtime/real-model qualifications above.
 
 ## Increment D1 — work, project and personal sharing
@@ -2957,20 +2958,21 @@ record iterators it means were extracted to `src/transfer-records.ts` and are im
 T023's acceptance list was written when #275 was still open. #304 retired the admission threshold
 rather than tuning it, and this section is the check that the list is now satisfied in the code
 rather than in intention. Everything below was run at `92aad5b1`, the revision that carries these
-tests.
+tests. Each receipt is named by its test rather than by a line number, which moves with every edit
+to that file.
 
 - **The artifact runs.** `searchMemories returns the fact-bearing memory of a five-row corpus`
-  (`test/unit/retrieval.test.ts:866`) carries the five rows of the `claude-to-codex` pair of the
+  (`test/unit/retrieval.test.ts`) carries the five rows of the `claude-to-codex` pair of the
   `2026-09-17T15-05-08-894Z` dogfood run and is no longer skipped. It passes.
 - **Admission is still the index's own match.** `searchMemories still returns the fact-bearing
-  memory with a non-matching sixth row` (`:883`) adds a Japanese row that shares no trigram with the
+  memory with a non-matching sixth row` adds a Japanese row that shares no trigram with the
   English prompt and asserts both that `m_fact` is returned and that `m_unrelated` is not. Retiring
   a threshold did not turn retrieval into "return everything". `searchMemories omits an unrelated
-  memory from a five-row corpus` (`:913`) is the same assertion at the size the acceptance names:
+  memory from a five-row corpus` is the same assertion at the size the acceptance names:
   the unrelated row takes `m_confirm`'s place rather than being added beside all five, because
   document count is what FTS5 computes its IDF from and #275 was a five-row corpus.
 - **The pack path, not only the query.** `buildPromptPack on the five-row receipt carries the three
-  fact strings through the trigram index` (`:1035`) builds the real pack over the same five rows and
+  fact strings through the trigram index` builds the real pack over the same five rows and
   asserts each fact string reaches its text — the pack path is where the dogfood run dropped the
   row, since it adds delivery filtering, retirement and the budget cut on top of the ranker. The
   same test pins the mechanism: `factRow.scoreTrigram` is not null and `factRow.viaLike` is false,
@@ -2979,12 +2981,12 @@ tests.
 - **The replacement mutation.** The retired `threshold = 0.99` mutation guarded the mechanism that
   was removed, so it was replaced by one that reintroduces magnitude-based exclusion: an early
   `if (row.scoreTrigram !== null && row.scoreTrigram > -0.001) return { ...row, score_rrf: 0 };` in
-  `rrfFuse` (`src/retrieval/rank.ts:48`). Four tests fail under it — the two `searchMemories` cases
+  `rrfFuse`. Four tests fail under it — the two `searchMemories` cases
   above (both return `m_confirm` alone, which is exactly the #275 shape), `order-preserving
   rescaling of either index does not change rankCandidates selection`, and the `buildPromptPack`
   receipt. The mutation was reverted and the file is unchanged.
 - **The legacy key is inert.** `a config with the legacy threshold key retrieves the same as one
-  without` (`:1012`) writes `[injection] threshold = 0.99` and compares results with a config that
+  without` writes `[injection] threshold = 0.99` and compares results with a config that
   has none. `doctor reports a set injection.threshold as ignored` and `why still explains a
   historical below_threshold ledger row` keep the old ledger rows readable.
 - **Nothing else regressed.** `npm test` at this revision: 1,663 passing and 0 failing in the
@@ -2994,8 +2996,8 @@ tests.
 
 What is not closed is the MMR leg, and it now has the corpus case #272 asked for, in two halves.
 `two distinct facts in similar words survive a shallow candidate list`
-(`test/unit/retrieval.test.ts:965`) runs: the same pair behind two, five and ten candidates is kept.
-`a distinct fact behind fifteen candidates is not dropped as redundant` (`:973`) is the same pair at
+(`test/unit/retrieval.test.ts`) runs: the same pair behind two, five and ten candidates is kept.
+`a distinct fact behind fifteen candidates is not dropped as redundant` is the same pair at
 fifteen, where the second is omitted as `mmr_redundant` while nothing is omitted as `budget`; it is
 committed skipped, the way the #275 artifact was, so the depth is pinned from both sides rather than
 asserted here. The assessment of the fix — including the cosine measurements that ruled out a
