@@ -262,10 +262,16 @@ test('completed-run evaluation reads the migrated database and returns every ver
         'the replay repository must use its own lifecycle despite another repo sharing the native ID');
 
       writeFileSync(join(paths.logs, 'observe.log'), 'batch failed: token LOGGED-SECRET-1\n');
-      const leaky = measure(opened, paths, { ...input, packs: [{ seq: 1, agent: 'codex', session: 'codex-01', event: 'SessionStart', text: 'pack says PACKED-SECRET-2', injectionIds: [] }],
-        maps: { ...input.maps, secretValues: [{ id: 'log', secret: 'LOGGED-SECRET-1' }, { id: 'pack', secret: 'PACKED-SECRET-2' },
-          { id: 'clean', secret: 'NEVER-WRITTEN-3' }] } });
-      assert.deepEqual((leaky.json.secrets as { leaked: string[] }).leaked, ['log', 'pack']);
+      writeFileSync(join(paths.spool, 'queued.json'), '{"text":"SPOOLED-SECRET-5"}');
+      opened.db.exec(`INSERT INTO raw_events (id, repo_id, session_id, kind, content, classification_state)
+        VALUES ('leak', 'r-a', 's-a', 'prompt', 'STORED-SECRET-4', 'done')`);
+      // The packs are searched as UTF-8 bytes, as the files are: a lone surrogate encodes as U+FFFD.
+      const leaky = measure(opened, paths, { ...input, packs: [{ seq: 1, agent: 'codex', session: 'codex-01', event: 'SessionStart',
+        text: 'pack says PACKED-SECRET-2 and LONE-\ufffd', injectionIds: [] }],
+      maps: { ...input.maps, secretValues: [{ id: 'log', secret: 'LOGGED-SECRET-1' }, { id: 'pack', secret: 'PACKED-SECRET-2' },
+        { id: 'clean', secret: 'NEVER-WRITTEN-3' }, { id: 'db', secret: 'STORED-SECRET-4' }, { id: 'spool', secret: 'SPOOLED-SECRET-5' },
+        { id: 'bytes', secret: 'LONE-\ud800' }] } });
+      assert.deepEqual((leaky.json.secrets as { leaked: string[] }).leaked, ['log', 'pack', 'db', 'spool', 'bytes']);
     } finally {
       opened.db.close();
     }
@@ -290,6 +296,12 @@ test('secretsInFiles finds a secret that straddles a chunk boundary, as a whole-
     for (const chunkBytes of [1, 8, 1 << 20]) {
       assert.deepEqual([...secretsInFiles([ascii, utf8], secrets, chunkBytes)].sort(), ['ascii', 'inside', 'utf8'], `chunk ${chunkBytes}`);
     }
+    const head = join(dir, 'head');
+    const rest = join(dir, 'rest');
+    writeFileSync(head, 'aaaKEY-');
+    writeFileSync(rest, '12345bbb');
+    assert.deepEqual([...secretsInFiles([head, rest], secrets, 4)], [], 'a secret split across two files is not one secret');
+    assert.throws(() => secretsInFiles([dir], secrets), 'an unreadable surface fails the check rather than counting as clean');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

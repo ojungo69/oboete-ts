@@ -236,8 +236,9 @@ function privacyChecks(
     .filter((path) => existsSync(path))
     .concat(walkFiles(paths.spool), walkFiles(paths.logs));
   const inFiles = secretsInFiles(written, input.maps.secretValues);
+  const packBytes = Buffer.from(input.packBlob, 'utf8');
   const leakedSecrets = input.maps.secretValues
-    .filter((row) => row.secret !== '' && (inFiles.has(row.id) || input.packBlob.includes(row.secret)))
+    .filter((row) => row.secret !== '' && (inFiles.has(row.id) || packBytes.includes(Buffer.from(row.secret, 'utf8'))))
     .map((row) => row.id);
 
   const memoryRows = db.prepare('SELECT title AS title, body AS body FROM memories').all() as {
