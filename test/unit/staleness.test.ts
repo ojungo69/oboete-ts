@@ -69,6 +69,24 @@ test('a cited path is fresh while the file exists and stale once it is gone', ()
   assert.equal(result.get(join(root, 'present.ts')), true, 'an absolute citation is used as it is');
 });
 
+test('a cited path outside the repository is never checked (#311)', () => {
+  const parent = temporaryRoot();
+  const root = join(parent, 'repo');
+  mkdirSync(root);
+  const outside = [join(parent, 'secret.txt'), '../secret.txt', join(`${root}-other`, 'x.ts'), '../repo-other/x.ts'];
+  const assertUnchecked = (state: string) => {
+    const result = checkPaths([...outside, 'inside.ts'], root);
+    for (const path of outside) assert.equal(result.has(path), false, `${path} is not checked while ${state}`);
+    assert.equal(result.get('inside.ts'), false, 'a path inside the repository is still checked');
+  };
+  assertUnchecked('absent');
+  // The answer is the same once the outside paths exist, so a pack carries no bit about them.
+  writeFileSync(join(parent, 'secret.txt'), 'secret\n');
+  mkdirSync(`${root}-other`);
+  writeFileSync(join(`${root}-other`, 'x.ts'), 'export {};\n');
+  assertUnchecked('present');
+});
+
 test('a cited commit is fresh while it is an ancestor of HEAD', { skip }, () => {
   const { root, first, second } = repositoryWithTwoCommits();
   const cache = createAncestorCache();

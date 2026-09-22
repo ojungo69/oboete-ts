@@ -3,7 +3,7 @@
 // still injected; the pack marks it and the ledger records why.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 // An injection hook must return within 300 ms (contracts/agents.md SLAs), so no git call may hang.
@@ -55,12 +55,20 @@ export function createAncestorCache(): AncestorCache {
   return { head: null, ancestors: new Map() };
 }
 
-/** `true` when the cited path is still present. A relative citation is read against `repoRoot`. */
+/**
+ * `true` when the cited path is still present. A relative citation is read against `repoRoot`. A
+ * path outside the repository is left out and never touched (#311): the provider chose it, and
+ * FR-029 checks citations against the repository's own state. Absent from the result, it is neither
+ * stale in a pack nor counted by the worker's `citations_ok`.
+ */
 export function checkPaths(paths: string[], repoRoot: string): Map<string, boolean> {
+  const root = resolve(repoRoot);
   const result = new Map<string, boolean>();
   for (const path of paths) {
-    if (result.has(path)) continue;
-    result.set(path, existsSync(isAbsolute(path) ? path : resolve(repoRoot, path)));
+    const target = resolve(root, path);
+    const inside = relative(root, target);
+    if (result.has(path) || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) continue;
+    result.set(path, existsSync(target));
   }
   return result;
 }
