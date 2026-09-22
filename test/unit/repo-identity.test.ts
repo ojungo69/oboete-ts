@@ -542,7 +542,9 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
     closeSync(descriptor);
   }
   for (const broken of [text.slice(0, 20), 'x'.repeat(9 * 1024)]) {
-    writeFileSync(file, broken);
+    // Replaced the way the product publishes an entry, so the entry is never rewritten in place.
+    writeFileSync(`${file}.broken`, broken, { mode: 0o600 });
+    renameSync(`${file}.broken`, file);
     assert.deepEqual(resolveRepoIdentity(root, { cache }), expected);
     // The miss rewrote the broken entry, so a starved lookup is answered again.
     assert.deepEqual(resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 0, cache }), expected);
