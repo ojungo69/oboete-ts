@@ -232,6 +232,20 @@ function withGitHome<T>(fn: (home: string) => T): T {
   }
 }
 
+/** Runs `fn` with `vars` set in the environment, then restores them. */
+function withEnv<T>(vars: Record<string, string>, fn: () => T): T {
+  const previous = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 const unanswered = (): SpawnSyncReturns<string> => ({
   pid: 0, output: [], stdout: '', stderr: '', status: null, signal: 'SIGTERM', error: new Error('git timed out'),
 });
@@ -310,6 +324,7 @@ test('#340: a change git would see makes the next lookup ask git again', { skip 
     ['global insteadOf', () => repositoryWithRemote('gh:owner/g.git'), () => writeFileSync(join(home, '.gitconfig'), '[url "https://github.com/"]\n\tinsteadOf = gh:\n')],
     ['legacy remotes file', newRepository, (root) => { mkdirSync(join(root, '.git', 'remotes'), { recursive: true }); writeFileSync(join(root, '.git', 'remotes', 'origin'), 'URL: https://github.com/owner/h.git\n'); }],
     ['branch switch', committed, (root) => git(root, 'checkout', '--quiet', '-b', 'other')],
+    ['HEAD rewritten in place', newRepository, (root) => writeFileSync(join(root, '.git', 'HEAD'), 'not a ref\n')],
     ['objects chmod', newRepository, (root) => chmodSync(join(root, '.git', 'objects'), 0o700)],
     ['repository recreated at the same path', newRepository, (root) => { rmSync(join(root, '.git'), { recursive: true, force: true }); git(root, 'init', '--quiet'); }],
   ];
@@ -386,7 +401,96 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
     return result;
   });
   refuse('no .git', temporaryRoot(), spawnSync);
+  // A fallback remote is used, never recorded: its legacy files are not signed.
+  const fallback = newRepository();
+  git(fallback, 'remote', 'add', 'upstream', 'https://github.com/owner/m.git');
+  refuse('a fallback remote', fallback, spawnSync);
+  const exited = (match: string, status: number): GitSpawn => (file, args, options) => args.slice(2).join(' ') === match
+    ? { pid: 0, output: [], stdout: '', stderr: '', status, signal: null } : spawnSync(file, args, options);
+  refuse('get-url origin failed other than exit 2', newRepository(), exited('remote get-url origin', 128));
+  refuse('the remote listing timed out', newRepository(), failing('remote'));
+  const header = (text: string): string => {
+    const root = newRepository();
+    writeFileSync(join(root, '.git', 'config'), `${text}${readFileSync(join(root, '.git', 'config'), 'utf8')}`);
+    return root;
+  };
+  refuse('an include after a BOM', header('\uFEFF[include]\n\tpath = extra\n'), spawnSync);
+  refuse('an include beside another header', header('[user][include]\n\tpath = extra\n'), spawnSync);
+  const unsearchable = temporaryRoot();
+  mkdirSync(join(unsearchable, 'locked'));
+  chmodSync(join(unsearchable, 'locked'), 0o000);
+  for (const [name, entry] of [['an empty PATH entry', ''], ['a relative PATH entry', 'bin'], ['an unsearchable PATH entry', join(unsearchable, 'locked', 'bin')]]) {
+    withEnv({ PATH: `${entry}:${process.env.PATH ?? ''}` }, () => {
+      const root = newRepository();
+      assert.deepEqual(resolveRepoIdentity(root), resolveRepoIdentity(root, { cache: cacheOf(temporaryRoot()) }), name);
+      refuse(name, root, spawnSync);
+    });
+  }
+  chmodSync(join(unsearchable, 'locked'), 0o700);
   void home;
+}));
+
+test('#340: the identity asks git first, and the cache only spends what it leaves', { skip }, () => withGitHome(() => {
+  const root = repositoryWithRemote('https://github.com/owner/n.git');
+  const { spawn, calls } = counting();
+  resolveRepoIdentity(root, { spawn, cache: cacheOf(temporaryRoot()) });
+  assert.deepEqual(calls.map((call) => call.join(' ')),
+    ['rev-parse --show-toplevel --git-common-dir --absolute-git-dir', 'remote get-url origin', 'var GIT_CONFIG_SYSTEM']);
+  // An identity that uses up the budget still stands, and nothing is recorded without time to check it.
+  const cache = cacheOf(temporaryRoot());
+  const slow: GitSpawn = (file, args, options) => {
+    const result = spawnSync(file, args, options);
+    if (args.slice(2).join(' ') === 'remote get-url origin') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+    return result;
+  };
+  assert.equal(resolveRepoIdentity(root, { spawn: slow, budgetMs: 1_000, callTimeoutMs: 1_000, cache }).identityKind, 'remote');
+  assert.equal(entries(cache).length, 1, 'with time left the answer is recorded');
+  const starved = cacheOf(temporaryRoot());
+  assert.equal(resolveRepoIdentity(root, { spawn: slow, budgetMs: 250, callTimeoutMs: 120, cache: starved }).identityKind, 'remote');
+  assert.deepEqual(entries(starved), []);
+}));
+
+test('#340: git activity that does not change the answer keeps the entry', { skip }, () => withGitHome(() => {
+  const cache = cacheOf(temporaryRoot());
+  const root = newRepository();
+  writeFileSync(join(root, 'tracked'), 'a\n');
+  git(root, 'add', 'tracked');
+  git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '--quiet', '-m', 'first');
+  const expected = warm(root, cache);
+  writeFileSync(join(root, 'tracked'), 'b\n');
+  git(root, 'status', '--short');
+  writeFileSync(join(root, 'new-top-level-file'), '');
+  assert.deepEqual(resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 0, cache }), expected);
+}));
+
+test('#340: an environment git reads differently is a miss', { skip }, () => withGitHome((home) => {
+  const root = newRepository();
+  for (const [name, change] of [
+    ['PATH', { PATH: `${process.env.PATH ?? ''}:${join(home, 'later')}` }],
+    ['HOME', { HOME: temporaryRoot() }],
+    ['SUDO_UID', { SUDO_UID: '12345' }],
+  ] as const) {
+    const cache = cacheOf(temporaryRoot());
+    warm(root, cache);
+    withEnv(change, () => {
+      const { spawn, calls } = counting();
+      resolveRepoIdentity(root, { spawn, cache });
+      assert.ok(calls.length > 0, `${name}: git was not asked again`);
+    });
+  }
+}));
+
+test('#340: a directory where git would stop first is never answered from a parent entry', { skip }, () => withGitHome(() => {
+  const cache = cacheOf(temporaryRoot());
+  const root = newRepository();
+  warm(root, cache);
+  mkdirSync(join(root, 'nested'));
+  git(join(root, 'nested'), 'init', '--quiet', '--bare', 'bare.git');
+  for (const inside of [join(root, '.git'), join(root, '.git', 'objects'), join(root, 'nested', 'bare.git')]) {
+    const { spawn, calls } = counting();
+    resolveRepoIdentity(inside, { spawn, budgetMs: 1_000, cache });
+    assert.ok(calls.length > 0, `${inside}: answered from the parent's entry`);
+  }
 }));
 
 test('#340: a broken or unwritable cache never changes the identity git gives', { skip }, () => withGitHome((home) => {
@@ -407,4 +511,7 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
   assert.deepEqual(resolveRepoIdentity(root, { cache: { dir: join(blocked, 'cache'), lookupMs: 60 } }), expected);
   // A lookup with no time left is skipped rather than started.
   assert.deepEqual(resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0, cache: { ...cache, lookupMs: 0 } }).identityKind, 'common_dir');
+  // A lookup that outlives its bound (1 ns) stops as a miss instead of finishing the signature.
+  assert.deepEqual(resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0, cache: { ...cache, lookupMs: 1e-6 } }).identityKind, 'common_dir');
+  assert.deepEqual(resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 0, cache }), expected, 'the entry itself is still good');
 }));

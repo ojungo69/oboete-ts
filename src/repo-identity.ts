@@ -3,7 +3,7 @@ import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { sha256Hex } from './hash.js';
 
@@ -166,9 +166,9 @@ function askGit(run: (args: string[]) => GitResult): GitAnswer {
   const listed = run(['remote']);
   const name = listed.status === 0 ? listed.stdout.split('\n').map((entry) => entry.trim()).find((entry) => entry !== '') : undefined;
   const other = name === undefined ? undefined : run(['remote', 'get-url', name]);
-  // #340: only exit 2 from `get-url origin` ("No such remote") is a confirmed absence; any other
-  // outcome leaves the answer usable now but never recorded.
-  const complete = located && origin.status === 2 && listed.status === 0 && (other === undefined || other.status === 0);
+  // #340: only exit 2 from `get-url origin` ("No such remote") with no remote at all is recorded. A
+  // fallback remote reads files the signature does not cover, and any other outcome is used now only.
+  const complete = located && origin.status === 2 && listed.status === 0 && name === undefined;
   return { top, common, gitDir, url: other?.status === 0 ? other.stdout : null, complete };
 }
 
@@ -192,13 +192,14 @@ export type IdentityCache = { dir: string; lookupMs: number };
 /** Most a hook spends reading a remembered answer; the caller also keeps it inside its own deadline. */
 export const IDENTITY_LOOKUP_MS = 60;
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const CACHE_MAX_BYTES = 8 * 1024;
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const CONFIG_MAX_BYTES = 64 * 1024;
-/** A write asks git one more question first; below this the budget goes to the identity alone. */
+/** Git time a miss keeps for the identity itself: the cache is prepared only from what is above it. */
 const CACHE_WRITE_MIN_BUDGET_MS = 150;
-const INCLUDE_HEADER = /^[ \t]*\[[ \t]*include/im;
+// Every include form git accepts (after a BOM, `[core][include]`, any case) means nothing is recorded.
+const INCLUDE_HEADER = /\[\s*include/i;
 
 type GitLocation = { entry: string; entryDir: string; gitDir: string; commonDir: string };
 
@@ -215,7 +216,11 @@ function gitLocationAt(dir: string, isFile: boolean): GitLocation | null {
   return { entry, entryDir: dir, gitDir, commonDir: common === null ? gitDir : realpathSync(resolve(gitDir, common.trim())) };
 }
 
-/** The first `.git` above `cwd` on one filesystem, and the git directories it names; never git itself. */
+/**
+ * The first `.git` above `cwd` on one filesystem, and the git directories it names; never git itself.
+ * A directory on the way that holds a `HEAD` may itself be a git directory (bare, or inside `.git`),
+ * where git would stop instead, so nothing is located there.
+ */
 function locateGit(cwd: string): GitLocation | null {
   try {
     let dir = realpathSync(cwd);
@@ -223,6 +228,7 @@ function locateGit(cwd: string): GitLocation | null {
     for (;;) {
       const found = statSync(join(dir, '.git'), { throwIfNoEntry: false });
       if (found !== undefined) return gitLocationAt(dir, found.isFile());
+      if (statSync(join(dir, 'HEAD'), { throwIfNoEntry: false }) !== undefined) return null;
       const parent = dirname(dir);
       if (parent === dir || statSync(parent).dev !== device) return null;
       dir = parent;
@@ -239,23 +245,36 @@ function readSmallFile(path: string, limit: number): string | null {
   return readFileSync(path, 'utf8');
 }
 
-function stamp(path: string): string {
+/**
+ * A directory git only checks is signed by identity and ownership, because git rewrites `.git`
+ * on every status; a file or a directory git lists is signed whole.
+ */
+function stamp(path: string, whole: boolean): string {
   try {
     const found = statSync(path, { bigint: true, throwIfNoEntry: false });
-    return found === undefined ? 'absent'
-      : [found.dev, found.ino, found.size, found.mtimeNs, found.ctimeNs, found.mode, found.uid].join(':');
+    if (found === undefined) return 'absent';
+    const node = [found.dev, found.ino, found.mode, found.uid];
+    return (whole ? [...node, found.size, found.mtimeNs, found.ctimeNs] : node).join(':');
   } catch {
     return 'unreadable';
   }
 }
 
-/** The `git` a spawn would run, found the way the shell finds it; no process is started. */
+/**
+ * The `git` a spawn would run, found the way `execvp` finds it; no process is started. Null when
+ * that search is more than stats of absolute directories: an empty or relative PATH entry (the
+ * working directory), a directory that cannot be searched, or Windows' `git.exe`.
+ */
 function gitExecutable(): string | null {
-  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-    if (dir === '') continue;
-    const candidate = join(dir, 'git');
-    const found = statSync(candidate, { throwIfNoEntry: false });
-    if (found !== undefined && found.isFile() && (found.mode & 0o111) !== 0) return candidate;
+  if (process.platform === 'win32') return null;
+  try {
+    for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+      if (!isAbsolute(dir)) return null;
+      const found = statSync(join(dir, 'git'), { throwIfNoEntry: false });
+      if (found !== undefined && found.isFile() && (found.mode & 0o111) !== 0) return join(dir, 'git');
+    }
+  } catch {
+    // EACCES or ENOTDIR on a PATH entry: execvp skips it, which a stat cannot tell apart.
   }
   return null;
 }
@@ -266,19 +285,37 @@ function globalConfigs(): string[] {
   return [join(xdg, 'git', 'config'), join(home, '.gitconfig')];
 }
 
-/** Every file whose change can change git's answer for this location (the plan's signature list). */
-function signedPaths(location: GitLocation, root: string, system: string, executable: string | null): string[] {
+/** What git reads for a location: directories it checks (`nodes`), and the files and listings it reads (`whole`). */
+type Signed = { nodes: string[]; whole: string[] };
+
+function signedPaths(location: GitLocation, root: string, executable: string, system: string | null): Signed {
   const { entry, entryDir, gitDir, commonDir } = location;
-  return [entry, entryDir, root,
-    gitDir, join(gitDir, 'commondir'), join(gitDir, 'config.worktree'), join(gitDir, 'HEAD'), join(gitDir, 'objects'), join(gitDir, 'refs'),
-    commonDir, join(commonDir, 'config'), join(commonDir, 'objects'), join(commonDir, 'refs'),
-    join(commonDir, 'remotes'), join(commonDir, 'remotes', 'origin'), join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'),
-    ...globalConfigs(), ...(system === '' ? [] : [system]), ...(executable === null ? [] : [executable])];
+  return {
+    nodes: [entryDir, root, gitDir, commonDir, join(commonDir, 'objects'), join(commonDir, 'refs')],
+    // The system file comes last: it is only known once `git var` has answered, after the identity.
+    whole: [...(entry === gitDir ? [] : [entry]), join(gitDir, 'commondir'), join(gitDir, 'config.worktree'), join(gitDir, 'HEAD'),
+      join(commonDir, 'config'), join(commonDir, 'remotes'), join(commonDir, 'remotes', 'origin'),
+      join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'), ...globalConfigs(), executable,
+      ...(system === null ? [] : [system])],
+  };
 }
 
-/** HOME, XDG_CONFIG_HOME and PATH decide which files git reads; a digest keeps a long PATH out of the entry. */
+/** The stamps of `signed`, or null once `alive` says the time is up or a path cannot be stamped. */
+function stampsOf(signed: Signed, alive: () => boolean): string[] | null {
+  const stamps: string[] = [];
+  for (const [paths, whole] of [[signed.nodes, false], [signed.whole, true]] as const) {
+    for (const path of paths) {
+      if (!alive()) return null;
+      stamps.push(stamp(path, whole));
+    }
+  }
+  return alive() && !stamps.includes('unreadable') ? stamps : null;
+}
+
+/** Which files git reads and whether it trusts them: HOME, XDG_CONFIG_HOME, PATH, the user and SUDO_UID. */
 function environmentStamp(): string {
-  return sha256Hex(JSON.stringify([process.env.HOME ?? '', process.env.XDG_CONFIG_HOME ?? '', process.env.PATH ?? '']));
+  const { HOME, XDG_CONFIG_HOME, PATH, SUDO_UID } = process.env;
+  return sha256Hex(JSON.stringify([HOME ?? '', XDG_CONFIG_HOME ?? '', PATH ?? '', SUDO_UID ?? '', process.geteuid?.() ?? '']));
 }
 
 function cacheFile(dir: string, location: GitLocation): string {
@@ -286,80 +323,90 @@ function cacheFile(dir: string, location: GitLocation): string {
 }
 
 type CacheEntry = {
-  v: number; env: string; git: string | null; paths: string[]; stamps: string[];
+  v: number; env: string; git: string; system: string; stamps: string[];
   identity: { kind: RepoIdentity['identityKind']; normalized: string; root: string; worktreeKey: string | null };
   writtenAt: number;
 };
 
-function strings(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
 function parseEntry(text: string): CacheEntry | null {
   const entry = JSON.parse(text) as Partial<CacheEntry> | null;
   const kept = entry?.identity;
-  if (entry?.v !== CACHE_VERSION || typeof entry.env !== 'string'
-    || !(entry.git === null || typeof entry.git === 'string') || !strings(entry.paths) || !strings(entry.stamps)
-    || entry.paths.length !== entry.stamps.length || typeof entry.writtenAt !== 'number' || typeof kept !== 'object' || kept === null
+  if (entry?.v !== CACHE_VERSION || typeof entry.env !== 'string' || typeof entry.git !== 'string' || typeof entry.system !== 'string'
+    || !Array.isArray(entry.stamps) || !entry.stamps.every((item) => typeof item === 'string')
+    || typeof entry.writtenAt !== 'number' || typeof kept !== 'object' || kept === null
     || (kept.kind !== 'remote' && kept.kind !== 'common_dir') || typeof kept.normalized !== 'string' || kept.normalized === ''
     || typeof kept.root !== 'string' || !(kept.worktreeKey === null || typeof kept.worktreeKey === 'string')) return null;
   return entry as CacheEntry;
 }
 
-/** A remembered answer whose every signed input is unchanged, within the lookup's own bound. */
-function lookupCached(cwd: string, cache: IdentityCache): RepoIdentity | null {
-  if (!(cache.lookupMs > 0)) return null;
+/** The `.git` found for `cwd`, and git's remembered answer for it when every signed input is unchanged. */
+type Lookup = { hit: RepoIdentity | null; location: GitLocation | null };
+
+function lookupCached(cwd: string, cache: IdentityCache): Lookup {
+  if (!(cache.lookupMs > 0)) return { hit: null, location: null };
   const deadline = performance.now() + cache.lookupMs;
+  const alive = (): boolean => performance.now() <= deadline;
   try {
     const location = locateGit(cwd);
-    if (location === null) return null;
+    if (location === null || !alive()) return { hit: null, location };
     const text = readSmallFile(cacheFile(cache.dir, location), CACHE_MAX_BYTES);
     const entry = text === null ? null : parseEntry(text);
     const age = Date.now() - (entry?.writtenAt ?? 0);
-    // The file name is the digest of the location, so a found entry already belongs to it.
     if (entry === null || age < 0 || age > CACHE_MAX_AGE_MS || entry.env !== environmentStamp()
-      || entry.git !== gitExecutable()) return null;
-    for (const [index, path] of entry.paths.entries()) {
-      if (performance.now() > deadline || stamp(path) !== entry.stamps[index]) return null;
-    }
+      || !alive() || entry.git !== gitExecutable()) return { hit: null, location };
+    const stamps = stampsOf(signedPaths(location, entry.identity.root, entry.git, entry.system), alive);
+    if (stamps === null || stamps.join('\0') !== entry.stamps.join('\0')) return { hit: null, location };
     const { kind, normalized, root, worktreeKey } = entry.identity;
-    return identity(kind, normalized, root, worktreeKey);
+    return { hit: identity(kind, normalized, root, worktreeKey), location };
   } catch {
-    return null;
+    return { hit: null, location: null };
   }
 }
 
 /** The configuration files git reads, when none of them is special, oversized or includes another. */
-function configsWithoutIncludes(location: GitLocation, system: string): boolean {
-  for (const path of [join(location.commonDir, 'config'), join(location.gitDir, 'config.worktree'), ...globalConfigs(), ...(system === '' ? [] : [system])]) {
-    const found = statSync(path, { throwIfNoEntry: false });
-    if (found === undefined) continue;
+function configsWithoutIncludes(location: GitLocation, system: string, alive: () => boolean): boolean {
+  for (const path of [join(location.commonDir, 'config'), join(location.gitDir, 'config.worktree'), ...globalConfigs(), system]) {
+    if (!alive()) return false;
+    if (statSync(path, { throwIfNoEntry: false }) === undefined) continue;
     const text = readSmallFile(path, CONFIG_MAX_BYTES);
     if (text === null || INCLUDE_HEADER.test(text)) return false;
   }
-  return true;
+  return alive();
+}
+
+/** The filesystem half of a write, stamped before git runs so that a change during its calls is seen. */
+type Pending = { cache: IdentityCache; location: GitLocation; executable: string; before: string[] };
+
+function prepareRecord(cache: IdentityCache, location: GitLocation, alive: () => boolean): Pending | null {
+  const executable = gitExecutable();
+  const before = executable === null ? null : stampsOf(signedPaths(location, location.entryDir, executable, null), alive);
+  return executable === null || before === null ? null : { cache, location, executable, before };
 }
 
 /**
- * Remembers `resolved` only when git's paths are the ones found on the filesystem and every signed
- * input stamped before the git calls is unchanged after them. Nothing here may fail the caller.
+ * Remembers `resolved` only when git's paths are the ones found on the filesystem and every input
+ * stamped before the identity's git calls is unchanged after them. Nothing here may fail the caller.
  */
-function recordCached(cache: IdentityCache, location: GitLocation, system: string, executable: string | null,
-  before: string[], cwd: string, answer: GitAnswer, resolved: RepoIdentity): void {
+function recordCached(pending: Pending, run: (args: string[]) => GitResult, alive: () => boolean,
+  cwd: string, answer: GitAnswer, resolved: RepoIdentity): void {
   try {
+    const { cache, location, executable, before } = pending;
     const same = (reported: string, found: string): boolean => realpathSync(resolve(cwd, reported)) === found;
     if (!answer.complete || !same(answer.top, location.entryDir) || !same(answer.gitDir, location.gitDir)
-      || !same(answer.common, location.commonDir) || !configsWithoutIncludes(location, system)) return;
-    const paths = signedPaths(location, resolved.root, system, executable);
-    const after = paths.map(stamp);
-    if (after.join('\0') !== before.join('\0') || after.includes('unreadable')) return;
+      || !same(answer.common, location.commonDir)) return;
+    // Asked after the identity, so it spends only what the identity left. An edit to the system file
+    // between the identity's calls and its stamp here is the one change this write cannot see.
+    const system = run(['var', 'GIT_CONFIG_SYSTEM']);
+    if (system.status !== 0 || !isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
+    const after = stampsOf(signedPaths(location, resolved.root, executable, system.stdout), alive);
+    if (after === null || after.slice(0, before.length).join('\0') !== before.join('\0')) return;
     const entry: CacheEntry = {
-      v: CACHE_VERSION, env: environmentStamp(), git: executable, paths, stamps: after,
+      v: CACHE_VERSION, env: environmentStamp(), git: executable, system: system.stdout, stamps: after,
       identity: { kind: resolved.identityKind, normalized: resolved.normalizedIdentity, root: resolved.root, worktreeKey: resolved.worktreeKey },
       writtenAt: Date.now(),
     };
     const text = JSON.stringify(entry);
-    if (Buffer.byteLength(text) > CACHE_MAX_BYTES) return;
+    if (Buffer.byteLength(text) > CACHE_MAX_BYTES || !alive()) return;
     mkdirSync(cache.dir, { recursive: true, mode: 0o700 });
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -380,16 +427,17 @@ export function resolveRepoIdentity(
   cwd: string,
   options?: { spawn?: GitSpawn; budgetMs?: number; callTimeoutMs?: number; cache?: IdentityCache },
 ): RepoIdentity {
+  // The git budget runs from here, so the time a lookup spends is time git does not get.
+  const startedAt = performance.now();
   const cache = options?.cache;
-  const hit = cache === undefined ? null : lookupCached(cwd, cache);
-  if (hit !== null) return hit;
+  const lookup = cache === undefined ? null : lookupCached(cwd, cache);
+  if (lookup !== null && lookup.hit !== null) return lookup.hit;
 
   const spawn = options?.spawn ?? spawnSync;
   // A hook only lowers the budget; a caller outside a hook raises both by naming a call timeout.
   const budget = options?.callTimeoutMs === undefined
     ? Math.min(GIT_BUDGET_MS, options?.budgetMs ?? GIT_BUDGET_MS) : options?.budgetMs ?? GIT_BUDGET_MS;
   const callTimeout = options?.callTimeoutMs ?? GIT_TIMEOUT_MS;
-  const startedAt = performance.now();
   const remaining = (): number => Math.floor(budget - (performance.now() - startedAt));
   const run = (args: string[]): GitResult => {
     // The budget bounds the whole identity, so the last call gets whatever is left of it.
@@ -399,16 +447,12 @@ export function resolveRepoIdentity(
     return left < 1 ? UNANSWERED : git(spawn, cwd, args, Math.min(callTimeout, left));
   };
 
-  // A write costs one question more, asked first so its answer is covered by the before-stamps.
-  const location = cache !== undefined && remaining() >= CACHE_WRITE_MIN_BUDGET_MS ? locateGit(cwd) : null;
-  const system = location === null ? UNANSWERED : run(['var', 'GIT_CONFIG_SYSTEM']);
-  const executable = system.status === 0 ? gitExecutable() : null;
-  const signed = location !== null && system.status === 0;
-  // The root is git's own answer; the before-stamps use the filesystem's, and the write compares the two.
-  const before = signed ? signedPaths(location, location.entryDir, system.stdout, executable).map(stamp) : [];
-
+  // Before the identity's calls only filesystem stamps run, and only from time above what the identity keeps.
+  const location = lookup?.location ?? null;
+  const pending = cache === undefined || location === null || remaining() < CACHE_WRITE_MIN_BUDGET_MS ? null
+    : prepareRecord(cache, location, () => remaining() >= CACHE_WRITE_MIN_BUDGET_MS);
   const answer = askGit(run);
   const resolved = identityFrom(cwd, answer);
-  if (signed && cache !== undefined) recordCached(cache, location, system.stdout, executable, before, cwd, answer, resolved);
+  if (pending !== null) recordCached(pending, run, () => remaining() > 0, cwd, answer, resolved);
   return resolved;
 }

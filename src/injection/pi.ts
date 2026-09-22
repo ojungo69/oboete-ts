@@ -250,7 +250,9 @@ export async function runInject(
     const deadline = kind === 'start' ? PI_SESSION_START_DEADLINE_MS : PI_INJECTION_DEADLINE_MS;
     const remainingBudget = (): number => deadline - live.elapsedMs();
 
+    // #340: the lookup and git both come out of what is left of the injection's deadline.
     const identity = resolveRepoIdentity(parsed.data.cwd, {
+      budgetMs: remainingBudget(),
       cache: { dir: paths.repoIdentityCache, lookupMs: Math.min(IDENTITY_LOOKUP_MS, remainingBudget()) },
     });
     const config = loadConfig(paths);
