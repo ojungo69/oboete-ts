@@ -146,7 +146,9 @@ function neuronsFrom(
   headers: Record<string, string> | undefined,
   usage: { inputTokens?: number; outputTokens?: number },
 ): number | null {
-  const header = responseHeader(headers, ['cf-aig-neurons', 'cf-neurons']);
+  // #347: the REST endpoint sends `cf-ai-neurons` (contracts/observer.md, step 7); `cf-aig-neurons` is
+  // AI Gateway's name for the same figure.
+  const header = responseHeader(headers, ['cf-ai-neurons', 'cf-aig-neurons', 'cf-neurons']);
   if (header !== undefined) {
     const parsed = Number(header);
     if (Number.isFinite(parsed) && parsed >= 0) return parsed;

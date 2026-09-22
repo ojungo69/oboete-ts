@@ -208,7 +208,8 @@ test('schema success returns validated output, model id, attempts, and header ne
   let requestBody: Record<string, unknown> | undefined;
   const scripted = scriptedFetch(async (_input, init) => {
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return workersResponse(output('e1'), { 'cf-aig-neurons': '45.25' });
+    // The header the Workers AI REST endpoint sends (#347).
+    return workersResponse(output('e1'), { 'cf-ai-neurons': '45.25' });
   });
   const harness = httpHarness(scripted.fetch, {
     preset: 'workers-ai',
