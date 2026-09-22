@@ -89,7 +89,7 @@ test('no preset applies one fallback batch, writes a degraded session summary, r
     const log = readFileSync(fixture.paths.observeLog, 'utf8');
     assert.match(log, /run start/);
     assert.match(log, /batch .*state=fallback reason=no_provider/);
-    assert.match(log, /run end .*recovered=0 .*batches=1 .*fallback=1/);
+    assert.match(log, /run end .*recovered=0 .*batches=1 .*fallback=1 .*peakRssKb=[1-9]\d*/);
     assert.equal(log.includes('The upload path now retries safely.'), false);
   });
 });
@@ -628,6 +628,18 @@ test('a session of lifecycle rows only is no queued work and the run ends empty'
       assert.equal(Number(db.prepare('SELECT COUNT(*) AS n FROM raw_events').get()?.n), 1);
     });
     assert.match(readFileSync(fixture.paths.observeLog, 'utf8'), /run end .*reason=empty/);
+  });
+});
+
+test('a run whose peak size cannot be read still ends with its own record and exit (#307)', async (t) => {
+  await withFixture(async (fixture) => {
+    writeConfig(fixture, 'none');
+    t.mock.method(process, 'resourceUsage', () => {
+      throw Object.assign(new Error('getrusage failed'), { code: 'EPERM' });
+    });
+    assert.equal(await runObserveForFixture(fixture), 0);
+    const end = readFileSync(fixture.paths.observeLog, 'utf8').split('\n').find((line) => line.includes(' run end '));
+    assert.match(end ?? '', /exit=0 reason=empty$/);
   });
 });
 
