@@ -6,6 +6,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -39,6 +40,7 @@ import {
   claudePostToolUse,
   fixture,
   withCapture,
+  type Context,
   type Json,
 } from '../helpers/capture.js';
 import { WALL_CLOCK_IS_MEASURED } from '../helpers/home.js';
@@ -690,6 +692,43 @@ test('a slow git leaves the detector its slice of the deadline (FR-002)', async 
     assert.equal(context.all('SELECT identity_kind FROM repos')[0]?.identity_kind, 'common_dir');
   });
 });
+
+// #340: git < 2.42 has no `git var GIT_CONFIG_SYSTEM`, and then the identity cache never writes an entry.
+const identityCacheable = spawnSync('git', ['var', 'GIT_CONFIG_SYSTEM'], { encoding: 'utf8' }).status === 0;
+
+test('a starved git after a warm capture keeps one repository and one session (#340)', { skip: !identityCacheable }, async () => {
+  await withCapture(async (context) => {
+    // The developer's own git configuration (an include, say) must not decide whether the entry is written.
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+    process.env.HOME = context.home;
+    process.env.XDG_CONFIG_HOME = join(context.home, '.config');
+    try {
+      await starvedAfterWarm(context);
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});
+
+async function starvedAfterWarm(context: Context): Promise<void> {
+  {
+    spawnSync('git', ['-C', context.repo, 'init', '--quiet'], { encoding: 'utf8' });
+    const payload = (content: string): Json => ({ ...claudePostToolUse(context.repo, content), session_id: 'starved-session' });
+    // The first hook meets an idle machine: git answers, and its answer is remembered.
+    assert.equal((await context.capture('claude', 'PostToolUse', payload('first'))).outcome, 'stored');
+    assert.equal(readdirSync(context.paths.repoIdentityCache).filter((name) => name.endsWith('.json')).length, 1);
+    // The next one meets a loaded machine: every git call times out.
+    const starved: GitSpawn = () => ({ pid: 0, output: [], stdout: '', stderr: '', status: null, signal: 'SIGTERM', error: new Error('git timed out') });
+    assert.equal((await context.capture('claude', 'PostToolUse', payload('second'), { deps: { gitSpawn: starved } })).outcome, 'stored');
+    assert.deepEqual(context.all('SELECT identity_kind, normalized_identity FROM repos').map((row) => ({ ...row })),
+      [{ identity_kind: 'common_dir', normalized_identity: realpathSync(join(context.repo, '.git')) }]);
+    assert.equal(context.all('SELECT id FROM sessions').length, 1);
+    assert.equal(context.all('SELECT DISTINCT repo_id FROM raw_events').length, 1);
+  }
+}
 
 test('the event goes to the spool when the database file is missing', async () => {
   await withCapture(

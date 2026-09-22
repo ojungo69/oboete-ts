@@ -39,7 +39,7 @@ import {
 import { appendLogQuietly, credentialValues, errorCode } from './log.js';
 import { ensureDirectories, withPhysicalRules, type OboetePaths } from './paths.js';
 import type { DetectorInput, DetectorResult } from './privacy/detect.js';
-import { resolveRepoIdentity, type GitSpawn, type RepoIdentity } from './repo-identity.js';
+import { IDENTITY_LOOKUP_MS, resolveRepoIdentity, type GitSpawn, type IdentityCache, type RepoIdentity } from './repo-identity.js';
 import { writeSpoolEntry, type SpoolEntry } from './spool.js';
 import { isLeaseFree, transactionImmediate } from './worker/lease.js';
 import type { HookContext } from './injection/inject.js';
@@ -110,11 +110,13 @@ export type CaptureDeps = {
 };
 
 /** What is left of the hook's deadline for git, with the detector's slice held back (FR-002). */
-function gitOptions(deps: CaptureDeps, deadlineMs: number): { spawn?: GitSpawn; budgetMs: number } {
+function gitOptions(deps: CaptureDeps, paths: OboetePaths, deadlineMs: number): { spawn?: GitSpawn; budgetMs: number; cache: IdentityCache } {
+  const remaining = deadlineMs - deps.elapsedMs();
   return {
     spawn: deps.gitSpawn,
-    budgetMs:
-      deadlineMs - deps.elapsedMs() - SPOOL_RESERVE_MS - ROW_BUILD_MARGIN_MS - DETECTOR_MIN_MS,
+    budgetMs: remaining - SPOOL_RESERVE_MS - ROW_BUILD_MARGIN_MS - DETECTOR_MIN_MS,
+    // #340: the lookup has its own bound, so a warm entry is read even when git's budget is spent.
+    cache: { dir: paths.repoIdentityCache, lookupMs: Math.min(IDENTITY_LOOKUP_MS, remaining - SPOOL_RESERVE_MS) },
   };
 }
 
@@ -910,7 +912,7 @@ function captureUnknownAgent(
           }),
         ];
   // FR-004: the repository comes from the directory the hook runs in, never from a payload.
-  return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, deadlineMs)), rows, diagnostics);
+  return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, input.paths, deadlineMs)), rows, diagnostics);
 }
 
 function captureUnmapped(
@@ -929,7 +931,7 @@ function captureUnmapped(
   const sessionId = adapted.metadata.nativeSessionId;
   if (sessionId === null || kindFromName === undefined) {
     diagnostics.push({ kind: 'unreadable_payload', agent, messageCode: input.eventName || 'none' });
-    return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, deadlineMs)), [], diagnostics);
+    return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, input.paths, deadlineMs)), [], diagnostics);
   }
   const row = metadataRow({
     agent,
@@ -944,7 +946,7 @@ function captureUnmapped(
       tool_name: adapted.metadata.toolName ?? undefined,
     },
   });
-  return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, deadlineMs)), [row], diagnostics);
+  return persist(resolveRepoIdentity(process.cwd(), gitOptions(deps, input.paths, deadlineMs)), [row], diagnostics);
 }
 
 async function captureAdapted(
@@ -966,7 +968,7 @@ async function captureAdapted(
   const first = events[0];
   if (first === undefined) return { outcome: 'not_captured', rows: 0 };
   // FR-004: the payload's `cwd` is used as a directory to run git in, never as an identity.
-  const identity = resolveRepoIdentity(first.cwd, gitOptions(deps, deadlineMs));
+  const identity = resolveRepoIdentity(first.cwd, gitOptions(deps, input.paths, deadlineMs));
 
   const settings = readSettings(paths, identity.root);
   if (settings === null) {
@@ -1133,7 +1135,7 @@ async function captureUnparsed(
   const { paths } = input;
   const scanned = scanPartialPrefix(context.agent, context.stdin.text);
   // FR-004: the repository is derived from where the hook runs, because the payload is unreadable.
-  const identity = resolveRepoIdentity(process.cwd(), gitOptions(deps, deadlineMs));
+  const identity = resolveRepoIdentity(process.cwd(), gitOptions(deps, input.paths, deadlineMs));
 
   if (scanned.nativeSessionId === null || context.kindFromName === undefined) {
     // A7: without a recoverable session id nothing is stored and a counter is incremented.

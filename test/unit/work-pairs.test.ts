@@ -119,9 +119,10 @@ async function parallelCorpus(fixture: Fixture, seed: Agent, label: string, sele
     const root = roots.get(args[1]);
     assert.ok(root, 'Git discovery is confined to the fixture worktrees');
     const command = args.slice(2).join(' ');
-    assert.ok(['rev-parse --show-toplevel --git-common-dir --absolute-git-dir', 'remote get-url origin', 'remote'].includes(command));
+    assert.ok(['rev-parse --show-toplevel --git-common-dir --absolute-git-dir', 'remote get-url origin', 'remote', 'var GIT_CONFIG_SYSTEM'].includes(command));
+    // An unanswered `git var` leaves the identity cache unwritten, so every capture asks this snapshot.
     return { pid: 0, output: [], stdout: command.startsWith('rev-parse') ? root : '', stderr: '',
-      status: command === 'remote get-url origin' ? 2 : 0, signal: null };
+      status: command === 'remote get-url origin' ? 2 : command.startsWith('var') ? 1 : 0, signal: null };
   };
   const others = AGENTS.filter((agent) => agent !== seed);
   const sessions = {
