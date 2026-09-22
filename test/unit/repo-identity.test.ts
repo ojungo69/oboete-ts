@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -531,7 +531,12 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
   const file = join(cache.dir, entries(cache)[0]);
   const text = readFileSync(file, 'utf8');
   for (const leak of ['s3cr3tpass', 'user:', 'q=1', '#f']) assert.equal(text.includes(leak), false, `the entry holds ${leak}`);
-  assert.equal(statSync(file).mode & 0o777, 0o600);
+  const descriptor = openSync(file, 'r');
+  try {
+    assert.equal(fstatSync(descriptor).mode & 0o777, 0o600);
+  } finally {
+    closeSync(descriptor);
+  }
   for (const broken of [text.slice(0, 20), 'x'.repeat(9 * 1024)]) {
     writeFileSync(file, broken);
     assert.deepEqual(resolveRepoIdentity(root, { cache }), expected);
