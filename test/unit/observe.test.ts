@@ -631,6 +631,18 @@ test('a session of lifecycle rows only is no queued work and the run ends empty'
   });
 });
 
+test('a run whose peak size cannot be read still ends with its own record and exit (#307)', async (t) => {
+  await withFixture(async (fixture) => {
+    writeConfig(fixture, 'none');
+    t.mock.method(process, 'resourceUsage', () => {
+      throw Object.assign(new Error('getrusage failed'), { code: 'EPERM' });
+    });
+    assert.equal(await runObserveForFixture(fixture), 0);
+    const end = readFileSync(fixture.paths.observeLog, 'utf8').split('\n').find((line) => line.includes(' run end '));
+    assert.match(end ?? '', /exit=0 reason=empty$/);
+  });
+});
+
 test('a prompt of non-ASCII blanks is no queued work and the run ends empty', async () => {
   await withFixture(async (fixture) => {
     writeConfig(fixture, 'none');

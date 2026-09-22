@@ -235,10 +235,19 @@ export function queueIsEmpty(db: DatabaseSync, paths: OboetePaths, token: string
   return pendingSummaries(db, token, now).length === 0;
 }
 
+/** #307: the run's own high-water mark (kB), which a sampler outside the process cannot read at exit. */
+function peakRssKb(): { peakRssKb?: number } {
+  try {
+    return { peakRssKb: process.resourceUsage().maxRSS };
+  } catch {
+    // getrusage can fail (EPERM under a seccomp filter); the record and the exit code stay the run's.
+    return {};
+  }
+}
+
 function logEnd(paths: OboetePaths, result: Counts, exit: number, reason: string): number {
   try {
-    // #307: the run's own high-water mark (kB), which a sampler outside the process cannot read at exit.
-    appendLog(paths.observeLog, 'info', 'run end', { ...result, exit, reason, peakRssKb: process.resourceUsage().maxRSS });
+    appendLog(paths.observeLog, 'info', 'run end', { ...result, exit, reason, ...peakRssKb() });
     return exit;
   } catch {
     return 3;
