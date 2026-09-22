@@ -315,7 +315,7 @@ function globalConfigs(): string[] | null {
 /** What git reads for a location: directories it checks (`nodes`), and the files and listings it reads (`whole`). */
 type Signed = { nodes: string[]; whole: string[] };
 
-function signedPaths(location: GitLocation, root: string, executable: string, system: string | null): Signed | null {
+function signedPaths(location: GitLocation, root: string, git: string, system: string | null): Signed | null {
   const { entry, entryDir, gitDir, commonDir } = location;
   const globals = globalConfigs();
   return globals === null ? null : {
@@ -323,7 +323,7 @@ function signedPaths(location: GitLocation, root: string, executable: string, sy
     // The system file comes last: it is only known once `git var` has answered, after the identity.
     whole: [...(entry === gitDir ? [] : [entry]), join(gitDir, 'commondir'), join(gitDir, 'config.worktree'), join(gitDir, 'HEAD'),
       join(commonDir, 'config'), join(commonDir, 'remotes'), join(commonDir, 'remotes', 'origin'),
-      join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'), ...globals, executable,
+      join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'), ...globals, git,
       ...(system === null ? [] : [system])],
   };
 }
