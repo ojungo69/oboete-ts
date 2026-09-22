@@ -279,7 +279,9 @@ column cannot hold go to the observe log, one line per attempted target.
   since `classifyApiError` has no row for the status an unserved model returns and `model_alias` is
   a *successful* call that named another model — and the target is reported the way it was
   otherwise in every other cache state, because a missing, foreign-account or stale list is one the
-  worker replaces and may not refuse anything. The catalog is fetched only for a `workers-ai`
+  worker replaces and may not refuse anything. The catalog is fetched only under the live consent a summary
+  needs: the worker checks it before every page, so no home without a matching record sends its token
+  for a model listing (#333, FR-022). It is fetched only for a `workers-ai`
   **primary** today, so a chain-only Workers AI target has no list to check against at all
   (issue #250); the check is silent there rather than printing a recovery that would never come
   true. The two halves of that verdict come

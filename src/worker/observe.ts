@@ -721,6 +721,10 @@ async function observeLifecycle(
                 stopReason = reason;
                 throw new Error('worker stopped');
               }
+              // #333: the listing carries the token to the provider's host, so every page, the first
+              // included, needs the same live consent as a summary (FR-022). A refusal is not a stop:
+              // the refresh ends, and batches meet the same gate on their own path.
+              if (!consentOk()) throw new Error('consent no longer matches');
               return await deps.fetch(...args);
             },
           }),
