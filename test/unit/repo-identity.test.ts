@@ -568,6 +568,13 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
   chmodSync(file, 0o644);
   assert.equal(starvedKind(), 'common_dir', 'an entry others may read');
   chmodSync(file, 0o600);
+  // A FIFO with no writer would block a plain open forever; it is a miss at once instead.
+  renameSync(file, copy);
+  if (spawnSync('mkfifo', [file]).status === 0) {
+    assert.equal(starvedKind(), 'common_dir', 'an entry that is a FIFO');
+    rmSync(file);
+  }
+  renameSync(copy, file);
   chmodSync(cache.dir, 0o755);
   assert.equal(starvedKind(), 'common_dir', 'a cache directory others may enter');
   chmodSync(cache.dir, 0o700);

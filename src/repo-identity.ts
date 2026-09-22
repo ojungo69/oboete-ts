@@ -378,13 +378,14 @@ function trustedCacheDir(dir: string, alive: () => boolean): boolean {
 }
 
 /**
- * An entry this user wrote: opened without following a link, and checked through the same
- * descriptor to be a regular file of this user, closed to everyone else, and at most 8 KB.
+ * An entry this user wrote: opened without following a link and without waiting (a FIFO would
+ * block a plain open forever), then checked through the same descriptor to be a regular file of
+ * this user, closed to everyone else, and at most 8 KB.
  */
 function readEntry(file: string, alive: () => boolean): string | null {
   let descriptor: number;
   try {
-    descriptor = within(alive, () => openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW));
+    descriptor = within(alive, () => openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
   } catch {
     return null; // absent, a link (ELOOP), or out of time
   }
