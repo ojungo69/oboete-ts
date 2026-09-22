@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -217,20 +217,30 @@ function gitLocationAt(dir: string, isFile: boolean): GitLocation | null {
 }
 
 /**
- * The first `.git` above `cwd` on one filesystem, and the git directories it names; never git itself.
- * A directory on the way that holds a `HEAD` may itself be a git directory (bare, or inside `.git`),
- * where git would stop instead, so nothing is located there.
+ * What git finds in `dir`: a location, a place where it would stop without one we can remember
+ * (null), or nothing (undefined). Git checks a symlinked marker's own ownership, so such a marker is
+ * not remembered; a `HEAD` of any kind, a dangling link included, may make `dir` a bare repository
+ * or a directory inside `.git`.
  */
-function locateGit(cwd: string): GitLocation | null {
+function discoverAt(dir: string): GitLocation | null | undefined {
+  const marker = lstatSync(join(dir, '.git'), { throwIfNoEntry: false });
+  if (marker?.isFile() || marker?.isDirectory()) return gitLocationAt(dir, marker.isFile());
+  if (marker !== undefined || lstatSync(join(dir, 'HEAD'), { throwIfNoEntry: false }) !== undefined) return null;
+  return undefined;
+}
+
+/** The first `.git` above `cwd` on one filesystem, and the git directories it names; never git itself. */
+function locateGit(cwd: string, alive: () => boolean): GitLocation | null {
   try {
     let dir = realpathSync(cwd);
-    const device = statSync(dir).dev;
+    const top = statSync(dir);
+    // `git -C` refuses a file, so a file's directory is not its repository.
+    if (!top.isDirectory()) return null;
     for (;;) {
-      const found = statSync(join(dir, '.git'), { throwIfNoEntry: false });
-      if (found !== undefined) return gitLocationAt(dir, found.isFile());
-      if (statSync(join(dir, 'HEAD'), { throwIfNoEntry: false }) !== undefined) return null;
+      const found = alive() ? discoverAt(dir) : null;
+      if (found !== undefined) return found;
       const parent = dirname(dir);
-      if (parent === dir || statSync(parent).dev !== device) return null;
+      if (parent === dir || statSync(parent).dev !== top.dev) return null;
       dir = parent;
     }
   } catch {
@@ -245,15 +255,26 @@ function readSmallFile(path: string, limit: number): string | null {
   return readFileSync(path, 'utf8');
 }
 
+/** Whether this process may search the directory or execute the file at `path`, as `access(2)` says (git uses it too). */
+function executable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * A directory git only checks is signed by identity and ownership, because git rewrites `.git`
- * on every status; a file or a directory git lists is signed whole.
+ * A directory git only checks is signed by identity, ownership and whether this process may search
+ * it (a group or an ACL can change that alone), because git rewrites `.git` on every status; a file
+ * or a directory git lists is signed whole.
  */
 function stamp(path: string, whole: boolean): string {
   try {
     const found = statSync(path, { bigint: true, throwIfNoEntry: false });
     if (found === undefined) return 'absent';
-    const node = [found.dev, found.ino, found.mode, found.uid];
+    const node = [found.dev, found.ino, found.mode, found.uid, found.gid, executable(path)];
     return (whole ? [...node, found.size, found.mtimeNs, found.ctimeNs] : node).join(':');
   } catch {
     return 'unreadable';
@@ -261,17 +282,18 @@ function stamp(path: string, whole: boolean): string {
 }
 
 /**
- * The `git` a spawn would run, found the way `execvp` finds it; no process is started. Null when
- * that search is more than stats of absolute directories: an empty or relative PATH entry (the
- * working directory), a directory that cannot be searched, or Windows' `git.exe`.
+ * The `git` a spawn would run, found the way `execvp` finds it (the first file this process may
+ * execute); no process is started. Null when that search is more than stats of absolute
+ * directories: an empty or relative PATH entry (the working directory), a directory that cannot be
+ * searched, or Windows' `git.exe`.
  */
-function gitExecutable(): string | null {
+function gitExecutable(alive: () => boolean): string | null {
   if (process.platform === 'win32') return null;
   try {
     for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-      if (!isAbsolute(dir)) return null;
-      const found = statSync(join(dir, 'git'), { throwIfNoEntry: false });
-      if (found !== undefined && found.isFile() && (found.mode & 0o111) !== 0) return join(dir, 'git');
+      if (!isAbsolute(dir) || !alive()) return null;
+      const candidate = join(dir, 'git');
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile() && executable(candidate)) return candidate;
     }
   } catch {
     // EACCES or ENOTDIR on a PATH entry: execvp skips it, which a stat cannot tell apart.
@@ -279,29 +301,32 @@ function gitExecutable(): string | null {
   return null;
 }
 
-function globalConfigs(): string[] {
+/** The global config files, or null when HOME or XDG_CONFIG_HOME is relative: git resolves those from `cwd`. */
+function globalConfigs(): string[] | null {
   const home = process.env.HOME ?? homedir();
   const xdg = process.env.XDG_CONFIG_HOME || join(home, '.config');
-  return [join(xdg, 'git', 'config'), join(home, '.gitconfig')];
+  return isAbsolute(home) && isAbsolute(xdg) ? [join(xdg, 'git', 'config'), join(home, '.gitconfig')] : null;
 }
 
 /** What git reads for a location: directories it checks (`nodes`), and the files and listings it reads (`whole`). */
 type Signed = { nodes: string[]; whole: string[] };
 
-function signedPaths(location: GitLocation, root: string, executable: string, system: string | null): Signed {
+function signedPaths(location: GitLocation, root: string, executable: string, system: string | null): Signed | null {
   const { entry, entryDir, gitDir, commonDir } = location;
-  return {
+  const globals = globalConfigs();
+  return globals === null ? null : {
     nodes: [entryDir, root, gitDir, commonDir, join(commonDir, 'objects'), join(commonDir, 'refs')],
     // The system file comes last: it is only known once `git var` has answered, after the identity.
     whole: [...(entry === gitDir ? [] : [entry]), join(gitDir, 'commondir'), join(gitDir, 'config.worktree'), join(gitDir, 'HEAD'),
       join(commonDir, 'config'), join(commonDir, 'remotes'), join(commonDir, 'remotes', 'origin'),
-      join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'), ...globalConfigs(), executable,
+      join(commonDir, 'branches'), join(commonDir, 'branches', 'origin'), ...globals, executable,
       ...(system === null ? [] : [system])],
   };
 }
 
 /** The stamps of `signed`, or null once `alive` says the time is up or a path cannot be stamped. */
-function stampsOf(signed: Signed, alive: () => boolean): string[] | null {
+function stampsOf(signed: Signed | null, alive: () => boolean): string[] | null {
+  if (signed === null) return null;
   const stamps: string[] = [];
   for (const [paths, whole] of [[signed.nodes, false], [signed.whole, true]] as const) {
     for (const path of paths) {
@@ -347,13 +372,13 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
   const deadline = performance.now() + cache.lookupMs;
   const alive = (): boolean => performance.now() <= deadline;
   try {
-    const location = locateGit(cwd);
+    const location = locateGit(cwd, alive);
     if (location === null || !alive()) return { hit: null, location };
     const text = readSmallFile(cacheFile(cache.dir, location), CACHE_MAX_BYTES);
     const entry = text === null ? null : parseEntry(text);
     const age = Date.now() - (entry?.writtenAt ?? 0);
     if (entry === null || age < 0 || age > CACHE_MAX_AGE_MS || entry.env !== environmentStamp()
-      || !alive() || entry.git !== gitExecutable()) return { hit: null, location };
+      || entry.git !== gitExecutable(alive)) return { hit: null, location };
     const stamps = stampsOf(signedPaths(location, entry.identity.root, entry.git, entry.system), alive);
     if (stamps === null || stamps.join('\0') !== entry.stamps.join('\0')) return { hit: null, location };
     const { kind, normalized, root, worktreeKey } = entry.identity;
@@ -365,7 +390,7 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
 
 /** The configuration files git reads, when none of them is special, oversized or includes another. */
 function configsWithoutIncludes(location: GitLocation, system: string, alive: () => boolean): boolean {
-  for (const path of [join(location.commonDir, 'config'), join(location.gitDir, 'config.worktree'), ...globalConfigs(), system]) {
+  for (const path of [join(location.commonDir, 'config'), join(location.gitDir, 'config.worktree'), ...globalConfigs() ?? [], system]) {
     if (!alive()) return false;
     if (statSync(path, { throwIfNoEntry: false }) === undefined) continue;
     const text = readSmallFile(path, CONFIG_MAX_BYTES);
@@ -378,7 +403,7 @@ function configsWithoutIncludes(location: GitLocation, system: string, alive: ()
 type Pending = { cache: IdentityCache; location: GitLocation; executable: string; before: string[] };
 
 function prepareRecord(cache: IdentityCache, location: GitLocation, alive: () => boolean): Pending | null {
-  const executable = gitExecutable();
+  const executable = gitExecutable(alive);
   const before = executable === null ? null : stampsOf(signedPaths(location, location.entryDir, executable, null), alive);
   return executable === null || before === null ? null : { cache, location, executable, before };
 }
@@ -397,7 +422,8 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     // Asked after the identity, so it spends only what the identity left. An edit to the system file
     // between the identity's calls and its stamp here is the one change this write cannot see.
     const system = run(['var', 'GIT_CONFIG_SYSTEM']);
-    if (system.status !== 0 || !isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
+    // An unanswered or failed `git var` prints no absolute path.
+    if (!isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
     const after = stampsOf(signedPaths(location, resolved.root, executable, system.stdout), alive);
     if (after === null || after.slice(0, before.length).join('\0') !== before.join('\0')) return;
     const entry: CacheEntry = {
@@ -408,6 +434,7 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     const text = JSON.stringify(entry);
     if (Buffer.byteLength(text) > CACHE_MAX_BYTES || !alive()) return;
     mkdirSync(cache.dir, { recursive: true, mode: 0o700 });
+    if (!alive()) return;
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
     writeFileSync(temporary, text, { mode: 0o600 });

@@ -427,7 +427,25 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
     });
   }
   chmodSync(join(unsearchable, 'locked'), 0o700);
+  withEnv({ XDG_CONFIG_HOME: '.config' }, () => refuse('a relative XDG_CONFIG_HOME', newRepository(), spawnSync));
+  const linked = newRepository();
+  const moved = join(temporaryRoot(), 'moved.git');
+  renameSync(join(linked, '.git'), moved);
+  symlinkSync(moved, join(linked, '.git'));
+  refuse('a symlinked .git', linked, spawnSync);
   void home;
+}));
+
+test('#340: the git on PATH is the first one this process may execute', { skip }, () => withGitHome(() => {
+  const odd = temporaryRoot();
+  // Execute permission for the group only: execvp skips it, so the signed git is the next one.
+  writeFileSync(join(odd, 'git'), '#!/bin/sh\nexit 1\n', { mode: 0o010 });
+  withEnv({ PATH: `${odd}:${process.env.PATH ?? ''}` }, () => {
+    const cache = cacheOf(temporaryRoot());
+    warm(newRepository(), cache);
+    const entry = JSON.parse(readFileSync(join(cache.dir, entries(cache)[0]), 'utf8'));
+    assert.notEqual(entry.git, join(odd, 'git'));
+  });
 }));
 
 test('#340: the identity asks git first, and the cache only spends what it leaves', { skip }, () => withGitHome(() => {
@@ -486,7 +504,10 @@ test('#340: a directory where git would stop first is never answered from a pare
   warm(root, cache);
   mkdirSync(join(root, 'nested'));
   git(join(root, 'nested'), 'init', '--quiet', '--bare', 'bare.git');
-  for (const inside of [join(root, '.git'), join(root, '.git', 'objects'), join(root, 'nested', 'bare.git')]) {
+  writeFileSync(join(root, 'file'), '');
+  mkdirSync(join(root, 'dangling'));
+  symlinkSync(join(root, 'nowhere'), join(root, 'dangling', 'HEAD'));
+  for (const inside of [join(root, '.git'), join(root, '.git', 'objects'), join(root, 'nested', 'bare.git'), join(root, 'file'), join(root, 'dangling')]) {
     const { spawn, calls } = counting();
     resolveRepoIdentity(inside, { spawn, budgetMs: 1_000, cache });
     assert.ok(calls.length > 0, `${inside}: answered from the parent's entry`);

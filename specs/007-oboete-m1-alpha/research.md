@@ -222,17 +222,38 @@ approval before implementation starts (task 0).
   cannot answer in time used to give an identity git never reported, splitting one repository into
   two. Hooks (capture, Pi injection) now keep git's last complete answer in
   `<OBOETE_HOME>/cache/repo-identity/<sha256 of the .git location>.json` (0600, at most 8 KB, no
-  raw remote URL) and reuse it without starting git while every input git reads is unchanged. The
-  signed inputs are the `.git` entry and root, the per-worktree git directory's `HEAD`,
-  `commondir`, `config.worktree`, `objects` and `refs`, the common directory's `config`, `objects`,
-  `refs`, `remotes` and `branches`, the global and
-  system configuration files, the `git` on `PATH`, and `HOME`, `XDG_CONFIG_HOME` and `PATH`.
-  Nothing is written when a configuration file uses `include`, when a call timed out or failed
-  other than a confirmed missing `origin`, or when an input changed during the lookup. An entry
-  older than 24 hours is not used. Reading an entry has its own bound (60 ms, and never past the
-  spool reserve), so it works when git's budget is spent. The CLI, MCP server and viewer still
-  ask git every time. A repository with no entry, at a moment git is also starved, still falls
-  back as before.
+  raw remote URL) and reuse it without starting git while every input git reads is unchanged.
+  - **Signed inputs.** Files, signed by `dev:ino:mode:uid:gid`, execute access, size, `mtimeNs`
+    and `ctimeNs`: a `.git` file, the git directory's `HEAD`, `commondir` and `config.worktree`, the
+    common directory's `config`, `remotes/origin` and `branches/origin`, the global configuration
+    files, the system configuration file that `git var GIT_CONFIG_SYSTEM` names, and the `git` on
+    `PATH`. The `remotes` and `branches` directories are signed the same way, because git lists
+    them. The directories git only checks (the root, the directory holding `.git`, the git and
+    common directories, and the common directory's `objects` and `refs`) are signed by
+    `dev:ino:mode:uid:gid` and search access only, since `git status` rewrites `.git` and any new
+    top-level file changes the root. `HOME`, `XDG_CONFIG_HOME`, `PATH`, `SUDO_UID` and the
+    effective user are signed as one digest.
+  - **Order.** The identity's own git calls run first. Before them only filesystem stamps run, and
+    only from git time above 150 ms. `git var` runs after them, from the time they left. An entry
+    is written only when every call answered, git's paths match the ones found on the filesystem,
+    no configuration file uses any `include` form, and every stamp taken before the identity's
+    calls is unchanged after them. The system file is stamped only after `git var`, so an edit to
+    it during the identity's calls is the one change a write cannot see; that stale hit is of the
+    accepted kind below.
+  - **Never cached.** Git older than 2.42 (no `GIT_CONFIG_SYSTEM`), Windows, a `PATH` entry before
+    `git` that is empty, relative or unsearchable, a relative `HOME` or `XDG_CONFIG_HOME`, a
+    symlinked `.git`, a directory with a `HEAD` between the working directory and `.git` (a bare
+    repository, or inside `.git`), a working directory that is a file, a repository whose only
+    remotes are not `origin`, and any call that timed out or failed other than exit 2 from
+    `get-url origin`.
+  - **Reading.** A lookup has its own bound (60 ms, and never past the spool reserve), so it works
+    when git's budget is spent. It still comes out of git's budget, which starts before it. An
+    entry older than 24 hours is not used.
+  - **Stale hits.** A hit is stale only when git's answer changed for a reason the signature does
+    not see, within 24 hours. It returns an identity git did report for this repository, which is
+    the identity every earlier event is stored under, so it never splits a session.
+  - The CLI, MCP server and viewer still ask git every time. A repository with no entry, at a
+    moment git is also starved, still falls back as before (#344).
 
 ## R9. Viewer and search surface
 
