@@ -152,6 +152,39 @@ test('Workers AI applies eligible rows and keeps local-only text out of the outb
   });
 });
 
+test('the Workers AI catalog is never listed without live consent (#333)', async () => {
+  await withFixture(async (fixture) => {
+    fixture.env = cleanEnv(fixture.home, {
+      OBOETE_CF_API_TOKEN: 'worker-test-token',
+      OBOETE_CF_ACCOUNT_ID: 'worker-test-account',
+    });
+    await captureEndedSession(fixture, { sessionId: 'consent-session', prompts: ['Describe the upload retry behavior.'] });
+    const pages: number[] = [];
+    let revokeAfterFirstPage = false;
+    const fetchImpl: typeof fetch = async (input) => {
+      if (String(input).includes('/models/search')) {
+        const page = Number(new URL(String(input)).searchParams.get('page') ?? '1');
+        pages.push(page);
+        // The owner withdraws consent while the listing is being paged.
+        if (revokeAfterFirstPage) writeConfig(fixture, 'workers-ai', fixture.env, 'invalid');
+        return catalogResponse(page);
+      }
+      throw new Error('no summary request is expected without consent');
+    };
+
+    // No consent record for this tuple: the token never leaves, not even for a model listing.
+    writeConfig(fixture, 'workers-ai', fixture.env, 'invalid');
+    await runObserveForFixture(fixture, { fetch: fetchImpl });
+    assert.deepEqual(pages, []);
+
+    // Consent that holds at the start and is withdrawn after the first page stops the next page.
+    writeConfig(fixture, 'workers-ai', fixture.env);
+    revokeAfterFirstPage = true;
+    await runObserveForFixture(fixture, { fetch: fetchImpl });
+    assert.deepEqual(pages, [1]);
+  });
+});
+
 test('a heartbeat failure stays contained when its log file is unavailable', async () => {
   await withFixture(async (fixture) => {
     fixture.env = cleanEnv(fixture.home, { OBOETE_OPENROUTER_API_KEY: 'worker-test-key' });

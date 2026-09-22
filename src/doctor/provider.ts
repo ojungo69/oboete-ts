@@ -874,6 +874,16 @@ function allowanceEstimateItem(
   }
 }
 
+/**
+ * The catalog is listed only under the live consent a summary needs (#333), so a home whose record
+ * does not match its configuration has to record consent before `oboete observe` can list it.
+ */
+function catalogRecovery(config: OboeteConfig, env: NodeJS.ProcessEnv): string {
+  return consentMatches(config, env)
+    ? '`oboete observe` fetches the catalog on the first batch.'
+    : '`oboete setup --accept-egress`, then `oboete observe` fetches the catalog on the first batch.';
+}
+
 export function catalogItems(
   config: OboeteConfig | null,
   db: DatabaseSync | null,
@@ -901,7 +911,7 @@ export function catalogItems(
         'catalog',
         'No catalog cached yet; the worker fetches it on the first batch.',
         'The configured model has not been checked against the provider list this run.',
-        '`oboete observe` fetches the catalog on the first batch.',
+        catalogRecovery(config, env),
       ),
     ];
   }
@@ -921,7 +931,7 @@ function catalogCacheItems(
         'catalog',
         'The cached catalog belongs to another account; the worker refreshes it on the next batch.',
         'The configured model has not been checked against the provider list this run.',
-        '`oboete observe` fetches the catalog on the first batch.',
+        catalogRecovery(config, env),
       ),
     ];
   }
@@ -931,7 +941,7 @@ function catalogCacheItems(
         'catalog',
         'The cached catalog is stale; the worker refreshes it on the next batch.',
         'The configured model has not been checked against the provider list this run.',
-        '`oboete observe` fetches the catalog on the first batch.',
+        catalogRecovery(config, env),
       ),
     ];
   }
