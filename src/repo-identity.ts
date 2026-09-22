@@ -436,7 +436,7 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
   cwd: string, answer: GitAnswer, resolved: RepoIdentity): void {
   try {
     const { cache, location, executable, before } = pending;
-    const same = (reported: string, found: string): boolean => realpathSync(resolve(cwd, reported)) === found;
+    const same = (reported: string, found: string): boolean => within(alive, () => realpathSync(resolve(cwd, reported))) === found;
     if (!answer.complete || !same(answer.top, location.entryDir) || !same(answer.gitDir, location.gitDir)
       || !same(answer.common, location.commonDir)) return;
     // Asked after the identity, so it spends only what the identity left. An edit to the system file
