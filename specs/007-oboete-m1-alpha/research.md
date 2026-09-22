@@ -223,16 +223,16 @@ approval before implementation starts (task 0).
   two. Hooks (capture, Pi injection) now keep git's last complete answer in
   `<OBOETE_HOME>/cache/repo-identity/<sha256 of the .git location>.json` (0600, at most 8 KB, no
   raw remote URL) and reuse it without starting git while every input git reads is unchanged.
-  - **Signed inputs.** Files, signed by `dev:ino:mode:uid:gid`, execute access, size, `mtimeNs`
-    and `ctimeNs`: a `.git` file, the git directory's `HEAD`, `commondir` and `config.worktree`, the
+  - **Signed inputs.** Files, signed by `dev:ino:mode:uid:gid`, execute and read access, size,
+    `mtimeNs` and `ctimeNs`: a `.git` file, the git directory's `HEAD`, `commondir` and `config.worktree`, the
     common directory's `config`, `remotes/origin` and `branches/origin`, the global configuration
     files, the system configuration file that `git var GIT_CONFIG_SYSTEM` names, and the `git` on
     `PATH`. The `remotes` and `branches` directories are signed the same way, because git lists
     them. The directories git only checks (the root, the directory holding `.git`, the git and
     common directories, and the common directory's `objects` and `refs`) are signed by
     `dev:ino:mode:uid:gid` and search access only, since `git status` rewrites `.git` and any new
-    top-level file changes the root. `HOME`, `XDG_CONFIG_HOME`, `PATH`, `SUDO_UID` and the
-    effective user are signed as one digest.
+    top-level file changes the root. `HOME`, `XDG_CONFIG_HOME`, `PATH`, `SUDO_UID`, the effective
+    user and its groups are signed as one digest.
   - **Order.** The identity's own git calls run first. Before them only filesystem stamps run, and
     only from git time above 150 ms. `git var` runs after them, from the time they left. An entry
     is written only when every call answered, git's paths match the ones found on the filesystem,
@@ -242,7 +242,7 @@ approval before implementation starts (task 0).
     accepted kind below.
   - **Never cached.** Git older than 2.42 (no `GIT_CONFIG_SYSTEM`), Windows, a `PATH` entry before
     `git` that is empty, relative or unsearchable, a relative `HOME` or `XDG_CONFIG_HOME`, a
-    symlinked `.git`, a directory with a `HEAD` between the working directory and `.git` (a bare
+    symlinked `.git` or `HEAD`, a directory with a `HEAD` between the working directory and `.git` (a bare
     repository, or inside `.git`), a working directory that is a file, a repository whose only
     remotes are not `origin`, and any call that timed out or failed other than exit 2 from
     `get-url origin`.

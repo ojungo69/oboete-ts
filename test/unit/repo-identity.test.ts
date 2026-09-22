@@ -11,6 +11,9 @@ import { resolveRepoIdentity, type GitSpawn, type IdentityCache, type RepoIdenti
 
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 const skip = gitAvailable ? false : 'git is not installed, so the repository identity tests cannot run.';
+// #340: without `git var GIT_CONFIG_SYSTEM` (git < 2.42) nothing is ever cached, so a warm entry cannot exist.
+const skipCache = skip || (spawnSync('git', ['var', 'GIT_CONFIG_SYSTEM'], { encoding: 'utf8' }).status === 0 ? false
+  : 'this git has no `git var GIT_CONFIG_SYSTEM` (git < 2.42), so the identity cache never writes an entry.');
 
 const temporaryRoots: string[] = [];
 
@@ -277,7 +280,7 @@ function warm(root: string, cache: IdentityCache): RepoIdentity {
   return identity;
 }
 
-test('#340: a warm entry answers a starved lookup exactly as git did', { skip }, () => withGitHome((home) => {
+test('#340: a warm entry answers a starved lookup exactly as git did', { skip: skipCache }, () => withGitHome((home) => {
   for (const root of [newRepository(), repositoryWithRemote('https://github.com/owner/warm.git')]) {
     const cache = cacheOf(temporaryRoot());
     const expected = warm(root, cache);
@@ -292,7 +295,7 @@ test('#340: a warm entry answers a starved lookup exactly as git did', { skip },
     expected.normalizedIdentity);
 }));
 
-test('#340: an entry warmed at the root is read from a subdirectory', { skip }, () => withGitHome((home) => {
+test('#340: an entry warmed at the root is read from a subdirectory', { skip: skipCache }, () => withGitHome((home) => {
   const cache = cacheOf(home);
   const root = newRepository();
   mkdirSync(join(root, 'src', 'deep'), { recursive: true });
@@ -300,7 +303,7 @@ test('#340: an entry warmed at the root is read from a subdirectory', { skip }, 
   assert.deepEqual(resolveRepoIdentity(join(root, 'src', 'deep'), { spawn: forbidden, budgetMs: 0, cache }), expected);
 }));
 
-test('#340: a change git would see makes the next lookup ask git again', { skip }, () => withGitHome((home) => {
+test('#340: a change git would see makes the next lookup ask git again', { skip: skipCache }, () => withGitHome((home) => {
   const committed = (): string => {
     const root = newRepository();
     git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'first');
@@ -340,7 +343,7 @@ test('#340: a change git would see makes the next lookup ask git again', { skip 
   }
 }));
 
-test('#340: a different git on PATH and an old entry are misses', { skip }, () => withGitHome((home) => {
+test('#340: a different git on PATH and an old entry are misses', { skip: skipCache }, () => withGitHome((home) => {
   const cache = cacheOf(home);
   const root = newRepository();
   warm(root, cache);
@@ -430,6 +433,10 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
   }
   chmodSync(join(unsearchable, 'locked'), 0o700);
   withEnv({ XDG_CONFIG_HOME: '.config' }, () => refuse('a relative XDG_CONFIG_HOME', newRepository(), spawnSync));
+  const symbolic = newRepository();
+  rmSync(join(symbolic, '.git', 'HEAD'));
+  symlinkSync('refs/heads/main', join(symbolic, '.git', 'HEAD'));
+  refuse('a symlinked HEAD', symbolic, spawnSync);
   const linked = newRepository();
   const moved = join(temporaryRoot(), 'moved.git');
   renameSync(join(linked, '.git'), moved);
@@ -438,7 +445,7 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
   void home;
 }));
 
-test('#340: the git on PATH is the first one this process may execute', { skip }, () => withGitHome(() => {
+test('#340: the git on PATH is the first one this process may execute', { skip: skipCache }, () => withGitHome(() => {
   const odd = temporaryRoot();
   // Execute permission for the group only: execvp skips it, so the signed git is the next one.
   writeFileSync(join(odd, 'git'), '#!/bin/sh\nexit 1\n', { mode: 0o010 });
@@ -450,7 +457,7 @@ test('#340: the git on PATH is the first one this process may execute', { skip }
   });
 }));
 
-test('#340: the identity asks git first, and the cache only spends what it leaves', { skip }, () => withGitHome(() => {
+test('#340: the identity asks git first, and the cache only spends what it leaves', { skip: skipCache }, () => withGitHome(() => {
   const root = repositoryWithRemote('https://github.com/owner/n.git');
   const { spawn, calls } = counting();
   resolveRepoIdentity(root, { spawn, cache: cacheOf(temporaryRoot()) });
@@ -470,7 +477,7 @@ test('#340: the identity asks git first, and the cache only spends what it leave
   assert.deepEqual(entries(starved), []);
 }));
 
-test('#340: git activity that does not change the answer keeps the entry', { skip }, () => withGitHome(() => {
+test('#340: git activity that does not change the answer keeps the entry', { skip: skipCache }, () => withGitHome(() => {
   const cache = cacheOf(temporaryRoot());
   const root = newRepository();
   writeFileSync(join(root, 'tracked'), 'a\n');
@@ -483,7 +490,7 @@ test('#340: git activity that does not change the answer keeps the entry', { ski
   assert.deepEqual(resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 0, cache }), expected);
 }));
 
-test('#340: an environment git reads differently is a miss', { skip }, () => withGitHome((home) => {
+test('#340: an environment git reads differently is a miss', { skip: skipCache }, () => withGitHome((home) => {
   const root = newRepository();
   for (const [name, change] of [
     ['PATH', { PATH: `${process.env.PATH ?? ''}:${join(home, 'later')}` }],
@@ -500,7 +507,7 @@ test('#340: an environment git reads differently is a miss', { skip }, () => wit
   }
 }));
 
-test('#340: a directory where git would stop first is never answered from a parent entry', { skip }, () => withGitHome(() => {
+test('#340: a directory where git would stop first is never answered from a parent entry', { skip: skipCache }, () => withGitHome(() => {
   const cache = cacheOf(temporaryRoot());
   const root = newRepository();
   warm(root, cache);
@@ -516,7 +523,7 @@ test('#340: a directory where git would stop first is never answered from a pare
   }
 }));
 
-test('#340: a broken or unwritable cache never changes the identity git gives', { skip }, () => withGitHome((home) => {
+test('#340: a broken or unwritable cache never changes the identity git gives', { skip: skipCache }, () => withGitHome((home) => {
   const root = repositoryWithRemote('https://user:s3cr3tpass@github.com/owner/m.git?q=1#f');
   const expected = resolveRepoIdentity(root);
   const cache = cacheOf(home);

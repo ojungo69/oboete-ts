@@ -152,29 +152,34 @@ function directoryGeneration(path: string): string | null {
 }
 
 /** What git said about `cwd`, and whether every call of the lookup completed with an answer. */
-type GitAnswer = { top: string; common: string; gitDir: string; url: string | null; complete: boolean };
+type GitAnswer = {
+  top: string; common: string; gitDir: string; worktreeKey: string | null; url: string | null; complete: boolean;
+};
 
-function askGit(run: (args: string[]) => GitResult): GitAnswer {
+function askGit(cwd: string, run: (args: string[]) => GitResult): GitAnswer {
   // The per-worktree Git directory distinguishes linked checkouts without another hook process.
   const parsed = run(['rev-parse', '--show-toplevel', '--git-common-dir', '--absolute-git-dir']);
   const [top = '', common = '', gitDir = ''] = parsed.status === 0 ? parsed.stdout.split('\n') : [];
   const located = parsed.status === 0 && top !== '' && common !== '' && gitDir !== '';
+  // Taken between the calls, so the time it takes is time the next call does not get.
+  const root = top === '' ? cwd : top;
+  const worktreeKey = directoryGeneration(gitDir === '' ? root : resolve(cwd, gitDir));
   // A repository with an origin costs this one call; only a repository without one pays for the
   // listing, which is rare enough to keep the common case at two calls inside the budget.
   const origin = run(['remote', 'get-url', 'origin']);
-  if (origin.status === 0) return { top, common, gitDir, url: origin.stdout, complete: located };
+  if (origin.status === 0) return { top, common, gitDir, worktreeKey, url: origin.stdout, complete: located };
   const listed = run(['remote']);
   const name = listed.status === 0 ? listed.stdout.split('\n').map((entry) => entry.trim()).find((entry) => entry !== '') : undefined;
   const other = name === undefined ? undefined : run(['remote', 'get-url', name]);
   // #340: only exit 2 from `get-url origin` ("No such remote") with no remote at all is recorded. A
   // fallback remote reads files the signature does not cover, and any other outcome is used now only.
   const complete = located && origin.status === 2 && listed.status === 0 && name === undefined;
-  return { top, common, gitDir, url: other?.status === 0 ? other.stdout : null, complete };
+  return { top, common, gitDir, worktreeKey, url: other?.status === 0 ? other.stdout : null, complete };
 }
 
 function identityFrom(cwd: string, answer: GitAnswer): RepoIdentity {
   const root = answer.top === '' ? cwd : answer.top;
-  const worktreeKey = directoryGeneration(answer.gitDir === '' ? root : resolve(cwd, answer.gitDir));
+  const { worktreeKey } = answer;
   const normalized = answer.url === null ? null : normalizeRemote(answer.url);
   if (normalized !== null) return identity('remote', normalized, root, worktreeKey);
   // ponytail: without a usable remote the identity is this machine's path, so the same repository
@@ -203,20 +208,30 @@ const INCLUDE_HEADER = /\[\s*include/i;
 
 type GitLocation = { entry: string; entryDir: string; gitDir: string; commonDir: string };
 
+/**
+ * One filesystem call of the cache, started only while `alive` holds. Past the bound it throws, and
+ * every cache path turns that into a miss, so at most the call already running overruns.
+ */
+function within<T>(alive: () => boolean, call: () => T): T {
+  if (!alive()) throw new Error('identity cache out of time');
+  return call();
+}
+
 /** The git directories a `.git` entry in `dir` names: itself, or the `gitdir:` of a `.git` file. */
 function gitLocationAt(dir: string, isFile: boolean, alive: () => boolean): GitLocation | null {
-  const entry = realpathSync(join(dir, '.git'));
+  const entry = within(alive, () => realpathSync(join(dir, '.git')));
   let gitDir = entry;
   if (isFile) {
-    if (!alive()) return null;
-    const pointer = /^gitdir: (.+)$/m.exec(readSmallFile(entry, 4096) ?? '');
-    if (pointer === null || !alive()) return null;
-    gitDir = realpathSync(resolve(dir, pointer[1].trim()));
+    const pointer = /^gitdir: (.+)$/m.exec(readSmallFile(entry, 4096, alive) ?? '');
+    if (pointer === null) return null;
+    gitDir = within(alive, () => realpathSync(resolve(dir, pointer[1].trim())));
   }
-  if (!alive()) return null;
-  const common = readSmallFile(join(gitDir, 'commondir'), 4096);
-  if (!alive()) return null;
-  return { entry, entryDir: dir, gitDir, commonDir: common === null ? gitDir : realpathSync(resolve(gitDir, common.trim())) };
+  // Git also reads a symlinked HEAD's link text, which no stamp covers, so such a HEAD is not remembered.
+  const head = join(gitDir, 'HEAD');
+  if (within(alive, () => lstatSync(head, { throwIfNoEntry: false }))?.isSymbolicLink()) return null;
+  const common = readSmallFile(join(gitDir, 'commondir'), 4096, alive);
+  const commonDir = common === null ? gitDir : within(alive, () => realpathSync(resolve(gitDir, common.trim())));
+  return { entry, entryDir: dir, gitDir, commonDir };
 }
 
 /**
@@ -226,25 +241,25 @@ function gitLocationAt(dir: string, isFile: boolean, alive: () => boolean): GitL
  * or a directory inside `.git`.
  */
 function discoverAt(dir: string, alive: () => boolean): GitLocation | null | undefined {
-  const marker = lstatSync(join(dir, '.git'), { throwIfNoEntry: false });
-  if (!alive()) return null;
+  const marker = within(alive, () => lstatSync(join(dir, '.git'), { throwIfNoEntry: false }));
   if (marker?.isFile() || marker?.isDirectory()) return gitLocationAt(dir, marker.isFile(), alive);
-  if (marker !== undefined || lstatSync(join(dir, 'HEAD'), { throwIfNoEntry: false }) !== undefined) return null;
+  if (marker !== undefined || within(alive, () => lstatSync(join(dir, 'HEAD'), { throwIfNoEntry: false })) !== undefined) return null;
   return undefined;
 }
 
 /** The first `.git` above `cwd` on one filesystem, and the git directories it names; never git itself. */
 function locateGit(cwd: string, alive: () => boolean): GitLocation | null {
   try {
-    let dir = realpathSync(cwd);
-    const top = statSync(dir);
+    const start = within(alive, () => realpathSync(cwd));
+    const top = within(alive, () => statSync(start));
     // `git -C` refuses a file, so a file's directory is not its repository.
     if (!top.isDirectory()) return null;
+    let dir = start;
     for (;;) {
-      const found = alive() ? discoverAt(dir, alive) : null;
+      const found = discoverAt(dir, alive);
       if (found !== undefined) return found;
       const parent = dirname(dir);
-      if (parent === dir || statSync(parent).dev !== top.dev) return null;
+      if (parent === dir || within(alive, () => statSync(parent)).dev !== top.dev) return null;
       dir = parent;
     }
   } catch {
@@ -253,16 +268,16 @@ function locateGit(cwd: string, alive: () => boolean): GitLocation | null {
 }
 
 /** A regular file of at most `limit` bytes, or null when it is absent, special or larger. */
-function readSmallFile(path: string, limit: number): string | null {
-  const found = statSync(path, { throwIfNoEntry: false });
+function readSmallFile(path: string, limit: number, alive: () => boolean): string | null {
+  const found = within(alive, () => statSync(path, { throwIfNoEntry: false }));
   if (found === undefined || !found.isFile() || found.size > limit) return null;
-  return readFileSync(path, 'utf8');
+  return within(alive, () => readFileSync(path, 'utf8'));
 }
 
-/** Whether this process may search the directory or execute the file at `path`, as `access(2)` says (git uses it too). */
-function executable(path: string): boolean {
+/** Whether this process may do `mode` on `path`, as `access(2)` says; git asks the same way. */
+function allowed(path: string, mode: number): boolean {
   try {
-    accessSync(path, constants.X_OK);
+    accessSync(path, mode);
     return true;
   } catch {
     return false;
@@ -271,15 +286,17 @@ function executable(path: string): boolean {
 
 /**
  * A directory git only checks is signed by identity, ownership and whether this process may search
- * it (a group or an ACL can change that alone), because git rewrites `.git` on every status; a file
- * or a directory git lists is signed whole.
+ * it (a group or an ACL can change that alone), because git rewrites `.git` on every status. A file
+ * or a directory git lists is signed whole, with whether this process may read it: git skips a
+ * global config it cannot read.
  */
-function stamp(path: string, whole: boolean): string {
+function stamp(path: string, whole: boolean, alive: () => boolean): string {
   try {
-    const found = statSync(path, { bigint: true, throwIfNoEntry: false });
+    const found = within(alive, () => statSync(path, { bigint: true, throwIfNoEntry: false }));
     if (found === undefined) return 'absent';
-    const node = [found.dev, found.ino, found.mode, found.uid, found.gid, executable(path)];
-    return (whole ? [...node, found.size, found.mtimeNs, found.ctimeNs] : node).join(':');
+    const node = [found.dev, found.ino, found.mode, found.uid, found.gid, within(alive, () => allowed(path, constants.X_OK))];
+    if (!whole) return node.join(':');
+    return [...node, within(alive, () => allowed(path, constants.R_OK)), found.size, found.mtimeNs, found.ctimeNs].join(':');
   } catch {
     return 'unreadable';
   }
@@ -295,12 +312,13 @@ function gitExecutable(alive: () => boolean): string | null {
   if (process.platform === 'win32') return null;
   try {
     for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-      if (!isAbsolute(dir) || !alive()) return null;
+      if (!isAbsolute(dir)) return null;
       const candidate = join(dir, 'git');
-      if (statSync(candidate, { throwIfNoEntry: false })?.isFile() && executable(candidate)) return candidate;
+      const found = within(alive, () => statSync(candidate, { throwIfNoEntry: false }));
+      if (found?.isFile() && within(alive, () => allowed(candidate, constants.X_OK))) return candidate;
     }
   } catch {
-    // EACCES or ENOTDIR on a PATH entry: execvp skips it, which a stat cannot tell apart.
+    // EACCES or ENOTDIR on a PATH entry (execvp skips it, which a stat cannot tell apart), or out of time.
   }
   return null;
 }
@@ -331,20 +349,15 @@ function signedPaths(location: GitLocation, root: string, git: string, system: s
 /** The stamps of `signed`, or null once `alive` says the time is up or a path cannot be stamped. */
 function stampsOf(signed: Signed | null, alive: () => boolean): string[] | null {
   if (signed === null) return null;
-  const stamps: string[] = [];
-  for (const [paths, whole] of [[signed.nodes, false], [signed.whole, true]] as const) {
-    for (const path of paths) {
-      if (!alive()) return null;
-      stamps.push(stamp(path, whole));
-    }
-  }
+  const stamps = [...signed.nodes.map((path) => stamp(path, false, alive)), ...signed.whole.map((path) => stamp(path, true, alive))];
   return alive() && !stamps.includes('unreadable') ? stamps : null;
 }
 
-/** Which files git reads and whether it trusts them: HOME, XDG_CONFIG_HOME, PATH, the user and SUDO_UID. */
+/** Which files git reads and whether it trusts them: HOME, XDG_CONFIG_HOME, PATH, the user, its groups and SUDO_UID. */
 function environmentStamp(): string {
   const { HOME, XDG_CONFIG_HOME, PATH, SUDO_UID } = process.env;
-  return sha256Hex(JSON.stringify([HOME ?? '', XDG_CONFIG_HOME ?? '', PATH ?? '', SUDO_UID ?? '', process.geteuid?.() ?? '']));
+  return sha256Hex(JSON.stringify([HOME ?? '', XDG_CONFIG_HOME ?? '', PATH ?? '', SUDO_UID ?? '',
+    process.geteuid?.() ?? '', process.getegid?.() ?? '', process.getgroups?.() ?? []]));
 }
 
 function cacheFile(dir: string, location: GitLocation): string {
@@ -377,8 +390,8 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
   const alive = (): boolean => performance.now() <= deadline;
   try {
     const location = locateGit(cwd, alive);
-    if (location === null || !alive()) return { hit: null, location };
-    const text = readSmallFile(cacheFile(cache.dir, location), CACHE_MAX_BYTES);
+    if (location === null) return { hit: null, location };
+    const text = readSmallFile(cacheFile(cache.dir, location), CACHE_MAX_BYTES, alive);
     const entry = text === null ? null : parseEntry(text);
     const age = Date.now() - (entry?.writtenAt ?? 0);
     if (entry === null || age < 0 || age > CACHE_MAX_AGE_MS || entry.env !== environmentStamp()
@@ -395,9 +408,8 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
 /** The configuration files git reads, when none of them is special, oversized or includes another. */
 function configsWithoutIncludes(location: GitLocation, system: string, alive: () => boolean): boolean {
   for (const path of [join(location.commonDir, 'config'), join(location.gitDir, 'config.worktree'), ...globalConfigs() ?? [], system]) {
-    if (!alive()) return false;
-    if (statSync(path, { throwIfNoEntry: false }) === undefined) continue;
-    const text = readSmallFile(path, CONFIG_MAX_BYTES);
+    if (within(alive, () => statSync(path, { throwIfNoEntry: false })) === undefined) continue;
+    const text = readSmallFile(path, CONFIG_MAX_BYTES, alive);
     if (text === null || INCLUDE_HEADER.test(text)) return false;
   }
   return alive();
@@ -407,9 +419,13 @@ function configsWithoutIncludes(location: GitLocation, system: string, alive: ()
 type Pending = { cache: IdentityCache; location: GitLocation; executable: string; before: string[] };
 
 function prepareRecord(cache: IdentityCache, location: GitLocation, alive: () => boolean): Pending | null {
-  const executable = gitExecutable(alive);
-  const before = executable === null ? null : stampsOf(signedPaths(location, location.entryDir, executable, null), alive);
-  return executable === null || before === null ? null : { cache, location, executable, before };
+  try {
+    const executable = gitExecutable(alive);
+    const before = executable === null ? null : stampsOf(signedPaths(location, location.entryDir, executable, null), alive);
+    return executable === null || before === null ? null : { cache, location, executable, before };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -436,11 +452,11 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     };
     const text = JSON.stringify(entry);
     if (Buffer.byteLength(text) > CACHE_MAX_BYTES || !alive()) return;
-    mkdirSync(cache.dir, { recursive: true, mode: 0o700 });
-    if (!alive()) return;
+    within(alive, () => mkdirSync(cache.dir, { recursive: true, mode: 0o700 }));
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
-    writeFileSync(temporary, text, { mode: 0o600 });
+    within(alive, () => writeFileSync(temporary, text, { mode: 0o600 }));
+    // Once written, the rename runs regardless of the time, so no temporary file is left behind.
     renameSync(temporary, file);
   } catch {
     // #340: the cache only ever saves a git call; the identity git just gave stands either way.
@@ -481,7 +497,7 @@ export function resolveRepoIdentity(
   const location = lookup?.location ?? null;
   const pending = cache === undefined || location === null || remaining() < CACHE_WRITE_MIN_BUDGET_MS ? null
     : prepareRecord(cache, location, () => remaining() >= CACHE_WRITE_MIN_BUDGET_MS);
-  const answer = askGit(run);
+  const answer = askGit(cwd, run);
   const resolved = identityFrom(cwd, answer);
   if (pending !== null) recordCached(pending, run, () => remaining() > 0, cwd, answer, resolved);
   return resolved;
