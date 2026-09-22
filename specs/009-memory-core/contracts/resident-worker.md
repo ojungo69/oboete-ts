@@ -304,7 +304,8 @@ plus `resident = true` cannot tell a resident from a manual `observe`.
 ## Logging
 
 One line per epoch that did work, with the counts the bounded run already reports, and one `run end`
-line naming the reason from the table. Idle waits and epochs that find nothing batchable write
+line naming the reason from the table and the process's own peak resident size (`peakRssKb`, from
+`process.resourceUsage().maxRSS`, #307). Idle waits and epochs that find nothing batchable write
 nothing, so neither an idle day nor a two-minute reclaim wait grows the log.
 
 ## Verification

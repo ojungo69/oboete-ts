@@ -237,7 +237,8 @@ export function queueIsEmpty(db: DatabaseSync, paths: OboetePaths, token: string
 
 function logEnd(paths: OboetePaths, result: Counts, exit: number, reason: string): number {
   try {
-    appendLog(paths.observeLog, 'info', 'run end', { ...result, exit, reason });
+    // #307: the run's own high-water mark (kB), which a sampler outside the process cannot read at exit.
+    appendLog(paths.observeLog, 'info', 'run end', { ...result, exit, reason, peakRssKb: process.resourceUsage().maxRSS });
     return exit;
   } catch {
     return 3;

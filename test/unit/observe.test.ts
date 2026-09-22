@@ -89,7 +89,7 @@ test('no preset applies one fallback batch, writes a degraded session summary, r
     const log = readFileSync(fixture.paths.observeLog, 'utf8');
     assert.match(log, /run start/);
     assert.match(log, /batch .*state=fallback reason=no_provider/);
-    assert.match(log, /run end .*recovered=0 .*batches=1 .*fallback=1/);
+    assert.match(log, /run end .*recovered=0 .*batches=1 .*fallback=1 .*peakRssKb=[1-9]\d*/);
     assert.equal(log.includes('The upload path now retries safely.'), false);
   });
 });
