@@ -552,6 +552,27 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
   assert.deepEqual(readdirSync(cache.dir).filter((name) => name.endsWith('.tmp')), []);
   rmSync(file, { recursive: true });
   warm(root, cache);
+  // An entry or a directory somebody else could have planted or replaced is not trusted.
+  const starvedKind = (): string => resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0, cache }).identityKind;
+  assert.equal(starvedKind(), 'remote', 'the warm entry is trusted');
+  const copy = join(temporaryRoot(), 'copy.json');
+  renameSync(file, copy);
+  symlinkSync(copy, file);
+  assert.equal(starvedKind(), 'common_dir', 'an entry that is a link');
+  rmSync(file);
+  renameSync(copy, file);
+  chmodSync(file, 0o644);
+  assert.equal(starvedKind(), 'common_dir', 'an entry others may read');
+  chmodSync(file, 0o600);
+  chmodSync(cache.dir, 0o755);
+  assert.equal(starvedKind(), 'common_dir', 'a cache directory others may enter');
+  chmodSync(cache.dir, 0o700);
+  assert.equal(starvedKind(), 'remote', 'the restored entry is trusted again');
+  const loose = cacheOf(temporaryRoot());
+  mkdirSync(loose.dir);
+  chmodSync(loose.dir, 0o755);
+  resolveRepoIdentity(root, { cache: loose });
+  assert.deepEqual(entries(loose), [], 'nothing is written into a directory others may enter');
   const blocked = join(temporaryRoot(), 'file');
   writeFileSync(blocked, '');
   assert.deepEqual(resolveRepoIdentity(root, { cache: { dir: join(blocked, 'cache'), lookupMs: 60 } }), expected);

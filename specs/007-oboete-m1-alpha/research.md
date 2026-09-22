@@ -246,6 +246,10 @@ approval before implementation starts (task 0).
     repository, or inside `.git`), a working directory that is a file, a repository whose only
     remotes are not `origin`, and any call that timed out or failed other than exit 2 from
     `get-url origin`.
+  - **Trust.** The cache follows the launcher's compile-cache rule. An entry is used or written only
+    when its directory is this user's own real directory, closed to others, and its parent is this
+    user's own real directory. The entry must be a regular file of this user, closed to others,
+    opened without following a link.
   - **Reading.** A lookup has its own bound (60 ms, and never past the spool reserve), so it works
     when git's budget is spent. It still comes out of git's budget, which starts before it. An
     entry older than 24 hours is not used.

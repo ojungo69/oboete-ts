@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -360,6 +360,47 @@ function environmentStamp(): string {
     process.geteuid?.() ?? '', process.getegid?.() ?? '', process.getgroups?.() ?? []]));
 }
 
+/**
+ * The launcher's rule for its compile cache, applied here: a real directory of this user (not a
+ * link), with none of `denied`'s bits set for anyone else. Windows has neither, so there it is the
+ * type test alone.
+ */
+function ownDirectory(path: string, denied: number, alive: () => boolean): boolean {
+  const found = within(alive, () => lstatSync(path, { throwIfNoEntry: false }));
+  const uid = process.geteuid?.();
+  return found !== undefined && !found.isSymbolicLink() && found.isDirectory()
+    && (uid === undefined || (found.uid === uid && (found.mode & denied) === 0));
+}
+
+/** The cache directory may decide an identity only when nobody else can plant or replace an entry in it. */
+function trustedCacheDir(dir: string, alive: () => boolean): boolean {
+  return ownDirectory(dirname(dir), 0, alive) && ownDirectory(dir, 0o077, alive);
+}
+
+/**
+ * An entry this user wrote: opened without following a link, and checked through the same
+ * descriptor to be a regular file of this user, closed to everyone else, and at most 8 KB.
+ */
+function readEntry(file: string, alive: () => boolean): string | null {
+  let descriptor: number;
+  try {
+    descriptor = within(alive, () => openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW));
+  } catch {
+    return null; // absent, a link (ELOOP), or out of time
+  }
+  try {
+    const found = within(alive, () => fstatSync(descriptor));
+    const uid = process.geteuid?.();
+    if (!found.isFile() || found.size > CACHE_MAX_BYTES
+      || (uid !== undefined && (found.uid !== uid || (found.mode & 0o077) !== 0))) return null;
+    return within(alive, () => readFileSync(descriptor, 'utf8'));
+  } catch {
+    return null;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function cacheFile(dir: string, location: GitLocation): string {
   return join(dir, `${sha256Hex(JSON.stringify([location.entryDir, location.entry]))}.json`);
 }
@@ -390,8 +431,8 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
   const alive = (): boolean => performance.now() <= deadline;
   try {
     const location = locateGit(cwd, alive);
-    if (location === null) return { hit: null, location };
-    const text = readSmallFile(cacheFile(cache.dir, location), CACHE_MAX_BYTES, alive);
+    if (location === null || !trustedCacheDir(cache.dir, alive)) return { hit: null, location };
+    const text = readEntry(cacheFile(cache.dir, location), alive);
     const entry = text === null ? null : parseEntry(text);
     const age = Date.now() - (entry?.writtenAt ?? 0);
     if (entry === null || age < 0 || age > CACHE_MAX_AGE_MS || entry.env !== environmentStamp()
@@ -453,12 +494,14 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     const text = JSON.stringify(entry);
     if (Buffer.byteLength(text) > CACHE_MAX_BYTES || !alive()) return;
     within(alive, () => mkdirSync(cache.dir, { recursive: true, mode: 0o700 }));
+    // Checked after mkdir, which follows a planted link and leaves an existing directory's mode alone.
+    if (!trustedCacheDir(cache.dir, alive)) return;
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
     if (!alive()) return;
     // Once the write has started, the rename or the cleanup runs regardless of the time.
     try {
-      writeFileSync(temporary, text, { mode: 0o600 });
+      writeFileSync(temporary, text, { mode: 0o600, flag: 'wx' });
       renameSync(temporary, file);
     } catch (error) {
       // Only this call's own temporary file, named by its UUID, is removed.
