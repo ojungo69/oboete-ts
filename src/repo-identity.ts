@@ -455,9 +455,10 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     within(alive, () => mkdirSync(cache.dir, { recursive: true, mode: 0o700 }));
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
+    if (!alive()) return;
+    // Once the write has started, the rename or the cleanup runs regardless of the time.
     try {
-      within(alive, () => writeFileSync(temporary, text, { mode: 0o600 }));
-      // Once written, the rename runs regardless of the time, so no temporary file is left behind.
+      writeFileSync(temporary, text, { mode: 0o600 });
       renameSync(temporary, file);
     } catch (error) {
       // Only this call's own temporary file, named by its UUID, is removed.
