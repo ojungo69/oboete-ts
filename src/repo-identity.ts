@@ -204,15 +204,18 @@ const INCLUDE_HEADER = /\[\s*include/i;
 type GitLocation = { entry: string; entryDir: string; gitDir: string; commonDir: string };
 
 /** The git directories a `.git` entry in `dir` names: itself, or the `gitdir:` of a `.git` file. */
-function gitLocationAt(dir: string, isFile: boolean): GitLocation | null {
+function gitLocationAt(dir: string, isFile: boolean, alive: () => boolean): GitLocation | null {
   const entry = realpathSync(join(dir, '.git'));
   let gitDir = entry;
   if (isFile) {
+    if (!alive()) return null;
     const pointer = /^gitdir: (.+)$/m.exec(readSmallFile(entry, 4096) ?? '');
-    if (pointer === null) return null;
+    if (pointer === null || !alive()) return null;
     gitDir = realpathSync(resolve(dir, pointer[1].trim()));
   }
+  if (!alive()) return null;
   const common = readSmallFile(join(gitDir, 'commondir'), 4096);
+  if (!alive()) return null;
   return { entry, entryDir: dir, gitDir, commonDir: common === null ? gitDir : realpathSync(resolve(gitDir, common.trim())) };
 }
 
@@ -222,9 +225,10 @@ function gitLocationAt(dir: string, isFile: boolean): GitLocation | null {
  * not remembered; a `HEAD` of any kind, a dangling link included, may make `dir` a bare repository
  * or a directory inside `.git`.
  */
-function discoverAt(dir: string): GitLocation | null | undefined {
+function discoverAt(dir: string, alive: () => boolean): GitLocation | null | undefined {
   const marker = lstatSync(join(dir, '.git'), { throwIfNoEntry: false });
-  if (marker?.isFile() || marker?.isDirectory()) return gitLocationAt(dir, marker.isFile());
+  if (!alive()) return null;
+  if (marker?.isFile() || marker?.isDirectory()) return gitLocationAt(dir, marker.isFile(), alive);
   if (marker !== undefined || lstatSync(join(dir, 'HEAD'), { throwIfNoEntry: false }) !== undefined) return null;
   return undefined;
 }
@@ -237,7 +241,7 @@ function locateGit(cwd: string, alive: () => boolean): GitLocation | null {
     // `git -C` refuses a file, so a file's directory is not its repository.
     if (!top.isDirectory()) return null;
     for (;;) {
-      const found = alive() ? discoverAt(dir) : null;
+      const found = alive() ? discoverAt(dir, alive) : null;
       if (found !== undefined) return found;
       const parent = dirname(dir);
       if (parent === dir || statSync(parent).dev !== top.dev) return null;
@@ -422,8 +426,7 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     // Asked after the identity, so it spends only what the identity left. An edit to the system file
     // between the identity's calls and its stamp here is the one change this write cannot see.
     const system = run(['var', 'GIT_CONFIG_SYSTEM']);
-    // An unanswered or failed `git var` prints no absolute path.
-    if (!isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
+    if (system.status !== 0 || !isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
     const after = stampsOf(signedPaths(location, resolved.root, executable, system.stdout), alive);
     if (after === null || after.slice(0, before.length).join('\0') !== before.join('\0')) return;
     const entry: CacheEntry = {

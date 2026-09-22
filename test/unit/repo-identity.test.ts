@@ -408,6 +408,8 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
   const exited = (match: string, status: number): GitSpawn => (file, args, options) => args.slice(2).join(' ') === match
     ? { pid: 0, output: [], stdout: '', stderr: '', status, signal: null } : spawnSync(file, args, options);
   refuse('get-url origin failed other than exit 2', newRepository(), exited('remote get-url origin', 128));
+  refuse('git var failed with a path on stdout', newRepository(), (file, args, options) => args.slice(2).join(' ') === 'var GIT_CONFIG_SYSTEM'
+    ? { pid: 0, output: [], stdout: '/etc/gitconfig\n', stderr: '', status: 1, signal: null } : spawnSync(file, args, options));
   refuse('the remote listing timed out', newRepository(), failing('remote'));
   const header = (text: string): string => {
     const root = newRepository();
