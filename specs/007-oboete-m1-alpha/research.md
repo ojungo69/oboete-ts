@@ -218,6 +218,21 @@ approval before implementation starts (task 0).
   or a pack.
 - **Reviewer changes**: `--git-common-dir`; managed blocks; consent bound to the full tuple and
   re-checked at send time; backup mode and owner; userinfo stripped from remotes.
+- **Amendment (#340, 2026-09-22)**: a hook's git calls share its 300 ms deadline, and a git that
+  cannot answer in time used to give an identity git never reported, splitting one repository into
+  two. Hooks (capture, Pi injection) now keep git's last complete answer in
+  `<OBOETE_HOME>/cache/repo-identity/<sha256 of the .git location>.json` (0600, at most 8 KB, no
+  raw remote URL) and reuse it without starting git while every input git reads is unchanged. The
+  signed inputs are the `.git` entry and root, the per-worktree git directory's `HEAD`,
+  `commondir`, `config.worktree`, `objects` and `refs`, the common directory's `config`, `objects`,
+  `refs`, `remotes` and `branches`, the global and
+  system configuration files, the `git` on `PATH`, and `HOME`, `XDG_CONFIG_HOME` and `PATH`.
+  Nothing is written when a configuration file uses `include`, when a call timed out or failed
+  other than a confirmed missing `origin`, or when an input changed during the lookup. An entry
+  older than 24 hours is not used. Reading an entry has its own bound (60 ms, and never past the
+  spool reserve), so it works when git's budget is spent. The CLI, MCP server and viewer still
+  ask git every time. A repository with no entry, at a moment git is also starved, still falls
+  back as before.
 
 ## R9. Viewer and search surface
 

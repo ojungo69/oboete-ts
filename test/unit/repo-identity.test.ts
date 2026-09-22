@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { resolveRepoIdentity } from '../../src/repo-identity.js';
+import { resolveRepoIdentity, type GitSpawn, type IdentityCache, type RepoIdentity } from '../../src/repo-identity.js';
 
 const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 const skip = gitAvailable ? false : 'git is not installed, so the repository identity tests cannot run.';
@@ -211,3 +211,200 @@ test('a slow git leaves the next call an unsigned integer timeout', () => {
   }
   assert.equal(identity.normalizedIdentity, 'github.com/owner/slow');
 });
+
+// ---------------------------------------------------------------------------
+// #340: git's complete answers are remembered, so a starved git cannot split a repository
+// ---------------------------------------------------------------------------
+
+/** Runs `fn` with HOME and XDG_CONFIG_HOME in a temporary directory, so the global git config is the test's. */
+function withGitHome<T>(fn: (home: string) => T): T {
+  const home = temporaryRoot();
+  const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.HOME = home;
+  process.env.XDG_CONFIG_HOME = join(home, '.config');
+  try {
+    return fn(home);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+const unanswered = (): SpawnSyncReturns<string> => ({
+  pid: 0, output: [], stdout: '', stderr: '', status: null, signal: 'SIGTERM', error: new Error('git timed out'),
+});
+
+/** A git that must not be asked: the lookup alone has to answer. */
+const forbidden: GitSpawn = (_file, args) => { throw new Error(`git was asked: ${args.join(' ')}`); };
+
+function counting(): { spawn: GitSpawn; calls: string[][] } {
+  const calls: string[][] = [];
+  return { calls, spawn: (file, args, options) => { calls.push(args.slice(2)); return spawnSync(file, args, options); } };
+}
+
+function cacheOf(home: string): IdentityCache {
+  return { dir: join(home, 'identity-cache'), lookupMs: 60 };
+}
+
+function entries(cache: IdentityCache): string[] {
+  try {
+    return readdirSync(cache.dir).filter((name) => name.endsWith('.json'));
+  } catch {
+    return [];
+  }
+}
+
+/** Resolves once with the real git so the cache holds an entry; returns that identity. */
+function warm(root: string, cache: IdentityCache): RepoIdentity {
+  const identity = resolveRepoIdentity(root, { cache });
+  assert.equal(entries(cache).length, 1, 'a complete answer is remembered');
+  return identity;
+}
+
+test('#340: a warm entry answers a starved lookup exactly as git did', { skip }, () => withGitHome((home) => {
+  for (const root of [newRepository(), repositoryWithRemote('https://github.com/owner/warm.git')]) {
+    const cache = cacheOf(temporaryRoot());
+    const expected = warm(root, cache);
+    const starved = resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 0, cache });
+    assert.deepEqual(starved, expected);
+    assert.notEqual(starved.worktreeKey, null);
+  }
+  // Without the cache the same starved call gives the identity git never returned.
+  const root = newRepository();
+  const expected = warm(root, cacheOf(home));
+  assert.notEqual(resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0 }).normalizedIdentity,
+    expected.normalizedIdentity);
+}));
+
+test('#340: an entry warmed at the root is read from a subdirectory', { skip }, () => withGitHome((home) => {
+  const cache = cacheOf(home);
+  const root = newRepository();
+  mkdirSync(join(root, 'src', 'deep'), { recursive: true });
+  const expected = warm(root, cache);
+  assert.deepEqual(resolveRepoIdentity(join(root, 'src', 'deep'), { spawn: forbidden, budgetMs: 0, cache }), expected);
+}));
+
+test('#340: a change git would see makes the next lookup ask git again', { skip }, () => withGitHome((home) => {
+  const committed = (): string => {
+    const root = newRepository();
+    git(root, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'first');
+    return root;
+  };
+  const changes: [string, () => string, (root: string) => void][] = [
+    ['remote set-url', () => repositoryWithRemote('https://github.com/owner/a.git'), (root) => git(root, 'remote', 'set-url', 'origin', 'https://github.com/owner/b.git')],
+    ['remote add', newRepository, (root) => git(root, 'remote', 'add', 'origin', 'https://github.com/owner/c.git')],
+    ['remote remove', () => repositoryWithRemote('https://github.com/owner/d.git'), (root) => git(root, 'remote', 'remove', 'origin')],
+    ['core.worktree', newRepository, (root) => git(root, 'config', 'core.worktree', root)],
+    ['same-length edit with mtime restored', () => {
+      const root = repositoryWithRemote('https://github.com/owner/e.git');
+      // A whole-second mtime can be restored exactly, so only ctime tells the edit apart.
+      utimesSync(join(root, '.git', 'config'), 1_700_000_000, 1_700_000_000);
+      return root;
+    }, (root) => {
+      const config = join(root, '.git', 'config');
+      writeFileSync(config, readFileSync(config, 'utf8').replace('owner/e.git', 'owner/f.git'));
+      utimesSync(config, 1_700_000_000, 1_700_000_000);
+    }],
+    ['global insteadOf', () => repositoryWithRemote('gh:owner/g.git'), () => writeFileSync(join(home, '.gitconfig'), '[url "https://github.com/"]\n\tinsteadOf = gh:\n')],
+    ['legacy remotes file', newRepository, (root) => { mkdirSync(join(root, '.git', 'remotes'), { recursive: true }); writeFileSync(join(root, '.git', 'remotes', 'origin'), 'URL: https://github.com/owner/h.git\n'); }],
+    ['branch switch', committed, (root) => git(root, 'checkout', '--quiet', '-b', 'other')],
+    ['objects chmod', newRepository, (root) => chmodSync(join(root, '.git', 'objects'), 0o700)],
+    ['repository recreated at the same path', newRepository, (root) => { rmSync(join(root, '.git'), { recursive: true, force: true }); git(root, 'init', '--quiet'); }],
+  ];
+  for (const [name, create, change] of changes) {
+    const cache = cacheOf(temporaryRoot());
+    const root = create();
+    warm(root, cache);
+    change(root);
+    const { spawn, calls } = counting();
+    resolveRepoIdentity(root, { spawn, cache });
+    assert.ok(calls.length > 0, `${name}: git was not asked again`);
+    rmSync(join(home, '.gitconfig'), { force: true });
+  }
+}));
+
+test('#340: a different git on PATH and an old entry are misses', { skip }, () => withGitHome((home) => {
+  const cache = cacheOf(home);
+  const root = newRepository();
+  warm(root, cache);
+  const file = join(cache.dir, entries(cache)[0]);
+  const entry = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, JSON.stringify({ ...entry, writtenAt: Date.now() - 25 * 60 * 60 * 1000 }));
+  assert.notDeepEqual(resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0, cache }).normalizedIdentity, entry.identity.normalized);
+
+  const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const script = `#!/bin/sh\nexec ${real} "$@"\n`;
+  const earlier = temporaryRoot();
+  const wrapper = temporaryRoot();
+  writeFileSync(join(wrapper, 'git'), script, { mode: 0o755 });
+  const previous = process.env.PATH;
+  process.env.PATH = `${earlier}:${wrapper}:${previous ?? ''}`;
+  try {
+    const fresh = cacheOf(temporaryRoot());
+    warm(root, fresh);
+    // The same PATH now finds another git first: nothing already signed changed.
+    writeFileSync(join(earlier, 'git'), script, { mode: 0o755 });
+    assert.throws(() => resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 1_000, cache: fresh }), /git was asked/);
+    rmSync(join(earlier, 'git'));
+    warm(root, cacheOf(temporaryRoot()));
+    const replaced = cacheOf(temporaryRoot());
+    warm(root, replaced);
+    writeFileSync(join(wrapper, 'git.new'), script, { mode: 0o755 });
+    renameSync(join(wrapper, 'git.new'), join(wrapper, 'git'));
+    assert.throws(() => resolveRepoIdentity(root, { spawn: forbidden, budgetMs: 1_000, cache: replaced }), /git was asked/);
+  } finally {
+    process.env.PATH = previous;
+  }
+}));
+
+test('#340: only a complete, unchanged, include-free answer is remembered', { skip }, () => withGitHome((home) => {
+  const refuse = (name: string, root: string, spawn: GitSpawn): void => {
+    const cache = cacheOf(temporaryRoot());
+    resolveRepoIdentity(root, { spawn, cache });
+    assert.deepEqual(entries(cache), [], `${name}: an entry was written`);
+  };
+  const failing = (match: string): GitSpawn => (file, args, options) =>
+    args.slice(2).join(' ') === match ? unanswered() : spawnSync(file, args, options);
+  refuse('rev-parse timed out', newRepository(), failing('rev-parse --show-toplevel --git-common-dir --absolute-git-dir'));
+  refuse('get-url origin timed out', repositoryWithRemote('https://github.com/owner/i.git'), failing('remote get-url origin'));
+  refuse('git var did not answer', newRepository(), failing('var GIT_CONFIG_SYSTEM'));
+  const upstream = newRepository();
+  git(upstream, 'remote', 'add', 'upstream', 'https://github.com/owner/j.git');
+  refuse('the fallback remote timed out', upstream, failing('remote get-url upstream'));
+  const included = newRepository();
+  writeFileSync(join(included, '.git', 'config'), `${readFileSync(join(included, '.git', 'config'), 'utf8')}[include]\n\tpath = extra\n`);
+  refuse('an include', included, spawnSync);
+  const bare = newRepository();
+  git(bare, 'config', 'core.bare', 'true');
+  refuse('rev-parse exited non-zero', bare, spawnSync);
+  const raced = repositoryWithRemote('https://github.com/owner/k.git');
+  refuse('a remote changed during the lookup', raced, (file, args, options) => {
+    const result = spawnSync(file, args, options);
+    if (args.slice(2).join(' ') === 'remote get-url origin') git(raced, 'remote', 'set-url', 'origin', 'https://github.com/owner/l.git');
+    return result;
+  });
+  refuse('no .git', temporaryRoot(), spawnSync);
+  void home;
+}));
+
+test('#340: a broken or unwritable cache never changes the identity git gives', { skip }, () => withGitHome((home) => {
+  const root = repositoryWithRemote('https://user:s3cr3tpass@github.com/owner/m.git?q=1#f');
+  const expected = resolveRepoIdentity(root);
+  const cache = cacheOf(home);
+  assert.deepEqual(warm(root, cache), expected);
+  const file = join(cache.dir, entries(cache)[0]);
+  const text = readFileSync(file, 'utf8');
+  for (const leak of ['s3cr3tpass', 'user:', 'q=1', '#f']) assert.equal(text.includes(leak), false, `the entry holds ${leak}`);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  for (const broken of [text.slice(0, 20), 'x'.repeat(9 * 1024)]) {
+    writeFileSync(file, broken);
+    assert.deepEqual(resolveRepoIdentity(root, { cache }), expected);
+  }
+  const blocked = join(temporaryRoot(), 'file');
+  writeFileSync(blocked, '');
+  assert.deepEqual(resolveRepoIdentity(root, { cache: { dir: join(blocked, 'cache'), lookupMs: 60 } }), expected);
+  // A lookup with no time left is skipped rather than started.
+  assert.deepEqual(resolveRepoIdentity(root, { spawn: () => unanswered(), budgetMs: 0, cache: { ...cache, lookupMs: 0 } }).identityKind, 'common_dir');
+}));

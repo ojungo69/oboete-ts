@@ -691,6 +691,22 @@ test('a slow git leaves the detector its slice of the deadline (FR-002)', async 
   });
 });
 
+test('a starved git after a warm capture keeps one repository and one session (#340)', async () => {
+  await withCapture(async (context) => {
+    spawnSync('git', ['-C', context.repo, 'init', '--quiet'], { encoding: 'utf8' });
+    const payload = (content: string): Json => ({ ...claudePostToolUse(context.repo, content), session_id: 'starved-session' });
+    // The first hook meets an idle machine: git answers, and its answer is remembered.
+    assert.equal((await context.capture('claude', 'PostToolUse', payload('first'))).outcome, 'stored');
+    // The next one meets a loaded machine: every git call times out.
+    const starved: GitSpawn = () => ({ pid: 0, output: [], stdout: '', stderr: '', status: null, signal: 'SIGTERM', error: new Error('git timed out') });
+    assert.equal((await context.capture('claude', 'PostToolUse', payload('second'), { deps: { gitSpawn: starved } })).outcome, 'stored');
+    assert.deepEqual(context.all('SELECT identity_kind, normalized_identity FROM repos').map((row) => ({ ...row })),
+      [{ identity_kind: 'common_dir', normalized_identity: realpathSync(join(context.repo, '.git')) }]);
+    assert.equal(context.all('SELECT id FROM sessions').length, 1);
+    assert.equal(context.all('SELECT DISTINCT repo_id FROM raw_events').length, 1);
+  });
+});
+
 test('the event goes to the spool when the database file is missing', async () => {
   await withCapture(
     async (context) => {

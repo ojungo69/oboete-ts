@@ -25,7 +25,7 @@ import { childEnvironment, credentialEntries, scrubCredentials } from '../log.js
 import { ensureDirectories, oboetePaths } from '../paths.js';
 import { claimLease, heartbeat, releaseLease } from '../worker/lease.js';
 import { RESOLVED_WORK_SQL, SUMMARIZABLE_ROW_SQL } from '../worker/batches.js';
-import { resolveRepoIdentity } from '../repo-identity.js';
+import { IDENTITY_LOOKUP_MS, resolveRepoIdentity } from '../repo-identity.js';
 import { stripRecognizedPacks } from '../injection/recognize.js';
 
 const ROOT_PH = '__OBOETE_REPLAY_ROOT__';
@@ -1367,7 +1367,11 @@ export async function runFixture(argv: string[]): Promise<number> {
   let workerPoll: ReturnType<typeof setInterval> | undefined;
   try {
     initRepo(run.repo);
-    run.repoId = resolveRepoIdentity(run.repo).id;
+    // #340: resolved once without a hook's budget, into the hooks' own cache, so the first hook of a
+    // loaded run already reads git's answer instead of racing git for it.
+    run.repoId = resolveRepoIdentity(run.repo, {
+      budgetMs: 10_000, callTimeoutMs: 5_000, cache: { dir: run.paths.repoIdentityCache, lookupMs: IDENTITY_LOOKUP_MS },
+    }).id;
     mkdirSync(home, { recursive: true, mode: 0o700 });
     ensureDirectories(run.paths);
     const created = createDatabase(run);

@@ -14,6 +14,8 @@ export type OboetePaths = {
   observeLog: string;
   paused: string;
   workerStop: string;
+  /** #340: git's remembered answers for the hooks' repository identity. */
+  repoIdentityCache: string;
 };
 
 /** The one data directory (FR-039, amendment A4): `OBOETE_HOME`, else `~/.oboete`. */
@@ -43,6 +45,7 @@ export function oboetePaths(home: string): OboetePaths {
     observeLog: join(logs, 'observe.log'),
     paused: join(home, 'paused'),
     workerStop: join(home, 'worker-stop'),
+    repoIdentityCache: join(home, 'cache', 'repo-identity'),
   };
 }
 

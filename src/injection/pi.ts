@@ -15,7 +15,7 @@ import { findNativeSession, nativeSessionStorage } from '../db/sessions.js';
 import type { NormalizedEvent } from '../events.js';
 import { appendLogQuietly, errorCode } from '../log.js';
 import { ensureDirectories, oboetePaths, resolveHome, withPhysicalRules, type OboetePaths } from '../paths.js';
-import { resolveRepoIdentity, type RepoIdentity } from '../repo-identity.js';
+import { IDENTITY_LOOKUP_MS, resolveRepoIdentity, type RepoIdentity } from '../repo-identity.js';
 import { detectInWorker, type DetectorInput, type DetectorResult } from '../privacy/detect.js';
 import { transactionImmediate } from '../worker/lease.js';
 import { indexUnavailable, injectPi, type HookContext } from './inject.js';
@@ -250,7 +250,9 @@ export async function runInject(
     const deadline = kind === 'start' ? PI_SESSION_START_DEADLINE_MS : PI_INJECTION_DEADLINE_MS;
     const remainingBudget = (): number => deadline - live.elapsedMs();
 
-    const identity = resolveRepoIdentity(parsed.data.cwd);
+    const identity = resolveRepoIdentity(parsed.data.cwd, {
+      cache: { dir: paths.repoIdentityCache, lookupMs: Math.min(IDENTITY_LOOKUP_MS, remainingBudget()) },
+    });
     const config = loadConfig(paths);
     const secretPaths = [
       ...withPhysicalRules(config.privacy.secret_paths),
