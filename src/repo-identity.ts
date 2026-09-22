@@ -412,7 +412,12 @@ type CacheEntry = {
 };
 
 function parseEntry(text: string): CacheEntry | null {
-  const entry = JSON.parse(text) as Partial<CacheEntry> | null;
+  let entry: Partial<CacheEntry> | null;
+  try {
+    entry = JSON.parse(text) as Partial<CacheEntry> | null;
+  } catch {
+    return null; // a truncated entry is a miss that keeps the location, so the record repairs it
+  }
   const kept = entry?.identity;
   if (entry?.v !== CACHE_VERSION || typeof entry.env !== 'string' || typeof entry.git !== 'string' || typeof entry.system !== 'string'
     || !Array.isArray(entry.stamps) || !entry.stamps.every((item) => typeof item === 'string')
@@ -429,8 +434,9 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
   if (cache.lookupMs <= 0) return { hit: null, location: null };
   const deadline = performance.now() + cache.lookupMs;
   const alive = (): boolean => performance.now() <= deadline;
+  let location: GitLocation | null = null;
   try {
-    const location = locateGit(cwd, alive);
+    location = locateGit(cwd, alive);
     if (location === null || !trustedCacheDir(cache.dir, alive)) return { hit: null, location };
     const text = readEntry(cacheFile(cache.dir, location), alive);
     const entry = text === null ? null : parseEntry(text);
@@ -442,7 +448,8 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
     const { kind, normalized, root, worktreeKey } = entry.identity;
     return { hit: identity(kind, normalized, root, worktreeKey), location };
   } catch {
-    return { hit: null, location: null };
+    // Any failure is a miss that keeps the location found, so a complete answer can repair the entry.
+    return { hit: null, location };
   }
 }
 
