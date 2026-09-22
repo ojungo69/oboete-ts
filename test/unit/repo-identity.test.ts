@@ -424,7 +424,10 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
   const unsearchable = temporaryRoot();
   mkdirSync(join(unsearchable, 'locked'));
   chmodSync(join(unsearchable, 'locked'), 0o000);
-  for (const [name, entry] of [['an empty PATH entry', ''], ['a relative PATH entry', 'bin'], ['an unsearchable PATH entry', join(unsearchable, 'locked', 'bin')]]) {
+  // Root may search any directory, so a mode-000 directory is not unsearchable for it.
+  const pathEntries = [['an empty PATH entry', ''], ['a relative PATH entry', 'bin'],
+    ...(process.getuid?.() === 0 ? [] : [['an unsearchable PATH entry', join(unsearchable, 'locked', 'bin')]])];
+  for (const [name, entry] of pathEntries) {
     withEnv({ PATH: `${entry}:${process.env.PATH ?? ''}` }, () => {
       const root = newRepository();
       assert.deepEqual(resolveRepoIdentity(root), resolveRepoIdentity(root, { cache: cacheOf(temporaryRoot()) }), name);
@@ -445,7 +448,8 @@ test('#340: only a complete, unchanged, include-free answer is remembered', { sk
   void home;
 }));
 
-test('#340: the git on PATH is the first one this process may execute', { skip: skipCache }, () => withGitHome(() => {
+// Root may execute a file with any execute bit, so a group-only git is executable for it.
+test('#340: the git on PATH is the first one this process may execute', { skip: skipCache || (process.getuid?.() === 0 && 'root executes any file with an execute bit') }, () => withGitHome(() => {
   const odd = temporaryRoot();
   // Execute permission for the group only: execvp skips it, so the signed git is the next one.
   writeFileSync(join(odd, 'git'), '#!/bin/sh\nexit 1\n', { mode: 0o010 });
@@ -541,6 +545,13 @@ test('#340: a broken or unwritable cache never changes the identity git gives', 
     writeFileSync(file, broken);
     assert.deepEqual(resolveRepoIdentity(root, { cache }), expected);
   }
+  // A publication that fails (the entry's path is a directory) leaves no temporary file behind.
+  rmSync(file);
+  mkdirSync(file);
+  assert.deepEqual(resolveRepoIdentity(root, { cache }), expected);
+  assert.deepEqual(readdirSync(cache.dir).filter((name) => name.endsWith('.tmp')), []);
+  rmSync(file, { recursive: true });
+  warm(root, cache);
   const blocked = join(temporaryRoot(), 'file');
   writeFileSync(blocked, '');
   assert.deepEqual(resolveRepoIdentity(root, { cache: { dir: join(blocked, 'cache'), lookupMs: 60 } }), expected);

@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -385,7 +385,7 @@ function parseEntry(text: string): CacheEntry | null {
 type Lookup = { hit: RepoIdentity | null; location: GitLocation | null };
 
 function lookupCached(cwd: string, cache: IdentityCache): Lookup {
-  if (!(cache.lookupMs > 0)) return { hit: null, location: null };
+  if (cache.lookupMs <= 0) return { hit: null, location: null };
   const deadline = performance.now() + cache.lookupMs;
   const alive = (): boolean => performance.now() <= deadline;
   try {
@@ -397,7 +397,7 @@ function lookupCached(cwd: string, cache: IdentityCache): Lookup {
     if (entry === null || age < 0 || age > CACHE_MAX_AGE_MS || entry.env !== environmentStamp()
       || entry.git !== gitExecutable(alive)) return { hit: null, location };
     const stamps = stampsOf(signedPaths(location, entry.identity.root, entry.git, entry.system), alive);
-    if (stamps === null || stamps.join('\0') !== entry.stamps.join('\0')) return { hit: null, location };
+    if (stamps?.join('\0') !== entry.stamps.join('\0')) return { hit: null, location };
     const { kind, normalized, root, worktreeKey } = entry.identity;
     return { hit: identity(kind, normalized, root, worktreeKey), location };
   } catch {
@@ -444,7 +444,7 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     const system = run(['var', 'GIT_CONFIG_SYSTEM']);
     if (system.status !== 0 || !isAbsolute(system.stdout) || !configsWithoutIncludes(location, system.stdout, alive)) return;
     const after = stampsOf(signedPaths(location, resolved.root, executable, system.stdout), alive);
-    if (after === null || after.slice(0, before.length).join('\0') !== before.join('\0')) return;
+    if (after?.slice(0, before.length).join('\0') !== before.join('\0')) return;
     const entry: CacheEntry = {
       v: CACHE_VERSION, env: environmentStamp(), git: executable, system: system.stdout, stamps: after,
       identity: { kind: resolved.identityKind, normalized: resolved.normalizedIdentity, root: resolved.root, worktreeKey: resolved.worktreeKey },
@@ -455,9 +455,15 @@ function recordCached(pending: Pending, run: (args: string[]) => GitResult, aliv
     within(alive, () => mkdirSync(cache.dir, { recursive: true, mode: 0o700 }));
     const file = cacheFile(cache.dir, location);
     const temporary = `${file}.${randomUUID()}.tmp`;
-    within(alive, () => writeFileSync(temporary, text, { mode: 0o600 }));
-    // Once written, the rename runs regardless of the time, so no temporary file is left behind.
-    renameSync(temporary, file);
+    try {
+      within(alive, () => writeFileSync(temporary, text, { mode: 0o600 }));
+      // Once written, the rename runs regardless of the time, so no temporary file is left behind.
+      renameSync(temporary, file);
+    } catch (error) {
+      // Only this call's own temporary file, named by its UUID, is removed.
+      rmSync(temporary, { force: true });
+      throw error;
+    }
   } catch {
     // #340: the cache only ever saves a git call; the identity git just gave stands either way.
   }
