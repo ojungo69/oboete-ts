@@ -1637,12 +1637,20 @@ for (const [name, fetchedAt] of [['an expired', ITEM_NOW - 86_400_000], ['a futu
         accountId: 'account', models: ['chosen-model'], defaultModelPresent: false,
         hasPaidOnlyModels: false, fetchedAt,
       }), ITEM_NOW);
-      assert.deepEqual(catalogItems(configSchema.parse({ observer: { model: 'chosen-model' } }), db, false,
-        { OBOETE_CF_ACCOUNT_ID: 'account', OBOETE_CF_API_TOKEN: 'test-token' }, ITEM_NOW), [{
+      const env = { OBOETE_CF_ACCOUNT_ID: 'account', OBOETE_CF_API_TOKEN: 'test-token' };
+      const unconsented = configSchema.parse({ observer: { model: 'chosen-model' } });
+      const consented = configSchema.parse({
+        observer: { model: 'chosen-model' }, consent: { hash: consentHash(consentTuple(unconsented, env)) },
+      });
+      const stale = (recovery: string) => [{
         item: 'catalog', status: 'unverified', reason: 'The cached catalog is stale; the worker refreshes it on the next batch.',
-        consequence: 'The configured model has not been checked against the provider list this run.',
-        recovery: '`oboete observe` fetches the catalog on the first batch.',
-      }]);
+        consequence: 'The configured model has not been checked against the provider list this run.', recovery,
+      }];
+      assert.deepEqual(catalogItems(consented, db, false, env, ITEM_NOW),
+        stale('`oboete observe` fetches the catalog on the first batch.'));
+      // #333: the worker lists the catalog only under matching consent, so the recovery starts there.
+      assert.deepEqual(catalogItems(unconsented, db, false, env, ITEM_NOW),
+        stale('`oboete setup --accept-egress`, then `oboete observe` fetches the catalog on the first batch.'));
     });
   });
 }
