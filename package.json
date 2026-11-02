@@ -26,27 +26,27 @@
     "test:coverage": "npm run build && node --test --enable-source-maps --experimental-test-coverage 'build/test/**/*.test.mjs'"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.43",
-    "@ai-sdk/provider": "4.0.10",
-    "@hono/node-server": "2.1.1",
-    "ai": "7.0.91",
-    "hono": "4.13.5",
-    "workers-ai-provider": "4.0.0",
-    "zod": "4.5.4"
+    "@ai-sdk/openai-compatible": "3.0.78",
+    "@ai-sdk/provider": "4.0.34",
+    "@hono/node-server": "2.1.5",
+    "ai": "7.0.153",
+    "hono": "4.13.14",
+    "workers-ai-provider": "4.0.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@secretlint/core": "13.0.5",
-    "@secretlint/profiler": "13.0.5",
-    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
-    "@secretlint/types": "13.0.5",
+    "@secretlint/core": "13.0.7",
+    "@secretlint/profiler": "13.0.7",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.7",
+    "@secretlint/types": "13.0.7",
     "@types/node": "22.20.1",
     "c8": "12.0.0",
     "esbuild": "0.28.2",
-    "eslint": "10.9.1",
+    "eslint": "10.13.0",
     "preact": "10.29.8",
-    "smol-toml": "1.8.0",
+    "smol-toml": "1.9.1",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.69.0"
+    "typescript-eslint": "8.72.0"
   }
 }
